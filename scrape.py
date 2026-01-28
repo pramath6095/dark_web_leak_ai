@@ -1,7 +1,15 @@
 """
 Dark Web Scraper Module
 Reads URLs from results.txt and saves scraped content to scraped_data.txt
+
+RECOMMENDED SETUP FOR MAXIMUM ANONYMITY:
+1. Connect to ProtonVPN using the desktop app (normal VPN connection)
+2. Start Tor Browser (runs SOCKS5 proxy on port 9150)
+3. Run this script
+
+Traffic flow: You → ProtonVPN (system VPN) → Tor SOCKS5 → Dark Web
 """
+import os
 import requests
 import random
 from bs4 import BeautifulSoup
@@ -9,8 +17,20 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+# Load environment variables from .env file
+from dotenv import load_dotenv
+load_dotenv()
+
 import warnings
 warnings.filterwarnings("ignore")
+
+# =============================================================================
+# CONFIGURATION (loaded from .env file)
+# =============================================================================
+# Tor SOCKS5 Proxy (Tor Browser = 9150, Tor Service = 9050)
+TOR_PROXY_HOST = os.getenv("TOR_PROXY_HOST", "127.0.0.1")
+TOR_PROXY_PORT = os.getenv("TOR_PROXY_PORT", "9150")
+# =============================================================================
 
 # User agents for request rotation
 USER_AGENTS = [
@@ -22,7 +42,7 @@ USER_AGENTS = [
 
 
 def get_tor_session():
-    """Creates a requests Session with Tor SOCKS proxy."""
+    """Creates a requests Session with Tor SOCKS5 proxy."""
     session = requests.Session()
     retry = Retry(
         total=3,
@@ -34,10 +54,12 @@ def get_tor_session():
     adapter = HTTPAdapter(max_retries=retry)
     session.mount("http://", adapter)
     session.mount("https://", adapter)
-    # Port 9150 = Tor Browser, Port 9050 = Tor service
+    
+    # Tor SOCKS5 proxy (traffic already goes through ProtonVPN if connected)
+    tor_proxy = f"socks5h://{TOR_PROXY_HOST}:{TOR_PROXY_PORT}"
     session.proxies = {
-        "http": "socks5h://127.0.0.1:9150",
-        "https": "socks5h://127.0.0.1:9150"
+        "http": tor_proxy,
+        "https": tor_proxy
     }
     return session
 
@@ -117,9 +139,15 @@ def save_scraped_data(results, filename="scraped_data.txt"):
 
 
 if __name__ == "__main__":
+    print("=" * 60)
+    print("DARK WEB SCRAPER - ProtonVPN + Tor")
+    print("=" * 60)
+    print(f"\nTraffic: You → ProtonVPN → Tor ({TOR_PROXY_HOST}:{TOR_PROXY_PORT}) → Dark Web")
+    print("=" * 60)
+    
     urls = load_urls()
     if urls:
-        print(f"[+] Loaded {len(urls)} URLs from results.txt")
+        print(f"\n[+] Loaded {len(urls)} URLs from results.txt")
         results = scrape_all(urls)
         save_scraped_data(results)
         
@@ -127,4 +155,4 @@ if __name__ == "__main__":
         success = sum(1 for v in results.values() if not v.startswith("[ERROR"))
         print(f"[+] Successfully scraped {success}/{len(urls)} pages")
     else:
-        print("[-] No URLs to scrape. Run search.py first.")
+        print("\n[-] No URLs to scrape. Run search.py first.")

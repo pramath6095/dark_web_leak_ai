@@ -1,7 +1,15 @@
 """
 Dark Web Search Module
 Searches dark web search engines and saves URLs to results.txt
+
+RECOMMENDED SETUP FOR MAXIMUM ANONYMITY:
+1. Connect to ProtonVPN using the desktop app (normal VPN connection)
+2. Start Tor Browser (runs SOCKS5 proxy on port 9150)
+3. Run this script
+
+Traffic flow: You → ProtonVPN (system VPN) → Tor SOCKS5 → Dark Web
 """
+import os
 import requests
 import random
 import re
@@ -10,8 +18,24 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+# Load environment variables from .env file
+from dotenv import load_dotenv
+load_dotenv()
+
 import warnings
 warnings.filterwarnings("ignore")
+
+# =============================================================================
+# CONFIGURATION (loaded from .env file)
+# =============================================================================
+# ProtonVPN credentials (for reference - connect via desktop app)
+PROTONVPN_USER = os.getenv("PROTONVPN_USER", "")
+PROTONVPN_PASS = os.getenv("PROTONVPN_PASS", "")
+
+# Tor SOCKS5 Proxy (Tor Browser = 9150, Tor Service = 9050)
+TOR_PROXY_HOST = os.getenv("TOR_PROXY_HOST", "127.0.0.1")
+TOR_PROXY_PORT = os.getenv("TOR_PROXY_PORT", "9150")
+# =============================================================================
 
 # User agents for request rotation
 USER_AGENTS = [
@@ -31,8 +55,23 @@ SEARCH_ENGINES = [
 ]
 
 
+def check_vpn_status():
+    """Check if traffic is going through VPN by checking public IP."""
+    try:
+        # This request goes through VPN if connected (not through Tor)
+        response = requests.get("https://api.ipify.org?format=json", timeout=10)
+        if response.status_code == 200:
+            ip = response.json().get("ip", "Unknown")
+            print(f"[*] Your public IP: {ip}")
+            print("[*] If this is NOT your real IP, ProtonVPN is working!")
+            return True
+    except:
+        print("[!] Could not check VPN status")
+    return False
+
+
 def get_tor_session():
-    """Creates a requests Session with Tor SOCKS proxy and retry logic."""
+    """Creates a requests Session with Tor SOCKS5 proxy."""
     session = requests.Session()
     retry = Retry(
         total=3,
@@ -44,10 +83,12 @@ def get_tor_session():
     adapter = HTTPAdapter(max_retries=retry)
     session.mount("http://", adapter)
     session.mount("https://", adapter)
-    # Port 9150 = Tor Browser, Port 9150 = Tor service
+    
+    # Tor SOCKS5 proxy (traffic already goes through ProtonVPN if connected)
+    tor_proxy = f"socks5h://{TOR_PROXY_HOST}:{TOR_PROXY_PORT}"
     session.proxies = {
-        "http": "socks5h://127.0.0.1:9150",
-        "https": "socks5h://127.0.0.1:9150"
+        "http": tor_proxy,
+        "https": tor_proxy
     }
     return session
 
@@ -119,8 +160,27 @@ def save_results(urls, filename="results.txt"):
 
 
 if __name__ == "__main__":
-    # Example usage
-    query = input("Enter search query: ")
+    print("=" * 60)
+    print("DARK WEB SEARCH - ProtonVPN + Tor")
+    print("=" * 60)
+    print("\nFor maximum anonymity:")
+    print("1. Connect to ProtonVPN desktop app")
+    print("2. Start Tor Browser")
+    print("3. Run this script")
+    print(f"\nTraffic: You → ProtonVPN → Tor ({TOR_PROXY_HOST}:{TOR_PROXY_PORT}) → Dark Web")
+    
+    if PROTONVPN_USER:
+        print(f"[✓] ProtonVPN credentials loaded from .env")
+    else:
+        print("[!] ProtonVPN credentials not set in .env (optional)")
+    
+    print("=" * 60)
+    
+    # Check VPN status
+    print("\n[*] Checking VPN status...")
+    check_vpn_status()
+    
+    query = input("\nEnter search query: ")
     urls = search_dark_web(query)
     if urls:
         save_results(urls)
