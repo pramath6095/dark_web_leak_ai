@@ -2,3 +2,5 @@ requests
 pysocks
 beautifulsoup4
 urllib3
+aiohttp
+aiohttp-socks

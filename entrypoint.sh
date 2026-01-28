@@ -16,11 +16,6 @@ else
     exit 1
 fi
 
-# Run the main application with provided query or prompt for input
-if [ $# -gt 0 ]; then
-    echo "[*] Running search with query: $@"
-    python main.py "$@"
-else
-    echo "[*] Running in interactive mode"
-    python main.py
-fi
+# Run the main application with all provided arguments
+echo "[*] Starting Dark Web Leak Monitor..."
+python main.py "$@"
