@@ -1,7 +1,3 @@
-"""
-Dark Web Leak Monitor
-Main entry point - Search and Scrape dark web content
-"""
 import sys
 from search import search_dark_web, save_results
 from scrape import load_urls, scrape_all, save_scraped_data

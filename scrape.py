@@ -1,14 +1,3 @@
-"""
-Dark Web Scraper Module
-Reads URLs from output/results.txt and saves scraped content to output/scraped_data.txt
-
-RECOMMENDED SETUP FOR MAXIMUM ANONYMITY:
-1. Connect to ProtonVPN using the desktop app (normal VPN connection)
-2. Start Tor Browser (runs SOCKS5 proxy on port 9150)
-3. Run this script
-
-Traffic flow: You → ProtonVPN (system VPN) → Tor SOCKS5 → Dark Web
-"""
 import os
 import requests
 import random
