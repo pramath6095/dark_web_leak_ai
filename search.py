@@ -1,6 +1,6 @@
 """
 Dark Web Search Module
-Searches dark web search engines and saves URLs to results.txt
+Searches dark web search engines and saves URLs to output/results.txt
 
 RECOMMENDED SETUP FOR MAXIMUM ANONYMITY:
 1. Connect to ProtonVPN using the desktop app (normal VPN connection)
@@ -151,8 +151,11 @@ def search_dark_web(query, max_workers=3):
     return unique_urls
 
 
-def save_results(urls, filename="results.txt"):
+def save_results(urls, filename="output/results.txt"):
     """Save URLs to a text file."""
+    # Create output directory if it doesn't exist
+    os.makedirs("output", exist_ok=True)
+    
     with open(filename, "w", encoding="utf-8") as f:
         for url in urls:
             f.write(url + "\n")

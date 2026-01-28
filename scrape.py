@@ -1,6 +1,6 @@
 """
 Dark Web Scraper Module
-Reads URLs from results.txt and saves scraped content to scraped_data.txt
+Reads URLs from output/results.txt and saves scraped content to output/scraped_data.txt
 
 RECOMMENDED SETUP FOR MAXIMUM ANONYMITY:
 1. Connect to ProtonVPN using the desktop app (normal VPN connection)
@@ -96,7 +96,7 @@ def scrape_url(url):
         return url, f"[ERROR: {str(e)[:100]}]"
 
 
-def load_urls(filename="results.txt"):
+def load_urls(filename="output/results.txt"):
     """Load URLs from results file."""
     try:
         with open(filename, "r", encoding="utf-8") as f:
@@ -122,8 +122,11 @@ def scrape_all(urls, max_workers=3):
     return results
 
 
-def save_scraped_data(results, filename="scraped_data.txt"):
+def save_scraped_data(results, filename="output/scraped_data.txt"):
     """Save scraped data organized by URL."""
+    # Create output directory if it doesn't exist
+    os.makedirs("output", exist_ok=True)
+    
     with open(filename, "w", encoding="utf-8") as f:
         f.write("=" * 80 + "\n")
         f.write("DARK WEB SCRAPED DATA\n")
@@ -147,7 +150,7 @@ if __name__ == "__main__":
     
     urls = load_urls()
     if urls:
-        print(f"\n[+] Loaded {len(urls)} URLs from results.txt")
+        print(f"\n[+] Loaded {len(urls)} URLs from output/results.txt")
         results = scrape_all(urls)
         save_scraped_data(results)
         

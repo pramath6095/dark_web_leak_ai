@@ -56,8 +56,8 @@ def main():
     print(f"  - Search Query: {query}")
     print(f"  - URLs Found: {len(urls)}")
     print(f"  - URLs Scraped: {success}/{len(urls_to_scrape)}")
-    print(f"  - Results saved to: results.txt")
-    print(f"  - Scraped data saved to: scraped_data.txt")
+    print(f"  - Results saved to: output/results.txt")
+    print(f"  - Scraped data saved to: output/scraped_data.txt")
     print("=" * 50 + "\n")
 
 
