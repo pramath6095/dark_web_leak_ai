@@ -1,0 +1,4 @@
+requests
+pysocks
+beautifulsoup4
+urllib3
