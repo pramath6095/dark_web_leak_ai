@@ -6,24 +6,20 @@ AI-based monitoring for data leaks on the dark web.
 
 ### Tor Connection
 The application connects to the dark web through **Tor** (The Onion Router):
-- Tor runs as a SOCKS5 proxy on `127.0.0.1:9050`
+- Tor runs as a SOCKS5 proxy on `127.0.0.1:9150`
 - All HTTP requests are routed through this proxy
 - This allows access to `.onion` websites (dark web)
 
 ```python
-# How the code connects to Tor (in search.py and scrape.py)
+
 session.proxies = {
-    "http": "socks5h://127.0.0.1:9050",
-    "https": "socks5h://127.0.0.1:9050"
+    "http": "socks5h://127.0.0.1:9150",
+    "https": "socks5h://127.0.0.1:9150"
 }
 ```
 
 ### Credentials Needed
-**NONE!** This project requires:
-- ❌ No API keys
-- ❌ No login credentials
-- ❌ No paid services
-- ✅ Only Tor running locally (free and open source)
+Tor running locally (free and open source)
 
 ---
 
@@ -57,7 +53,7 @@ docker rm dwl
 
 ---
 
-### Option 2: Windows (Native)
+### Option 2: Windows 
 
 **Step 1: Install Tor**
 - Download Tor Browser from https://www.torproject.org/
@@ -135,7 +131,7 @@ dark_web_leak/
 ├── requirements.txt # Python dependencies
 ├── Dockerfile       # Docker configuration
 ├── entrypoint.sh    # Docker entrypoint (starts Tor)
-└── README.md        # This file
+
 ```
 
 ---
@@ -152,7 +148,7 @@ dark_web_leak/
 │                        │                 │          │
 │                        ▼                 ▼          │
 │               ┌────────────────────────────┐        │
-│               │   Tor Proxy (port 9050)    │        │
+│               │   Tor Proxy (port 9150)    │        │
 │               └────────────┬───────────────┘        │
 │                            │                        │
 └────────────────────────────┼────────────────────────┘
