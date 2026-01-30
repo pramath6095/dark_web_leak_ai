@@ -36,6 +36,5 @@ ENV/
 *.swp
 *.swo
 
-# Output files (optional - uncomment if you don't want to track)
-# results.txt
-# scraped_data.txt
+# Output files
+output/
