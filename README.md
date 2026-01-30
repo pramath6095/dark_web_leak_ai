@@ -2,141 +2,98 @@
 
 AI-based monitoring for data leaks on the dark web.
 
+## Features
+
+- 🚀 **Async I/O** - High-performance crawling with `aiohttp` (5-10x faster than sync)
+- 🔀 **Circuit Isolation** - Each request uses a different Tor circuit via SOCKS5 auth
+- ⚡ **HEAD Pre-checks** - Skip dead links quickly before full scrape
+- 🎭 **Browser Fingerprinting** - Realistic request headers matching real browsers
+- 🔒 **Error Sanitization** - No internal details leaked in error messages
+- 🔍 **16 Search Engines** - Queries multiple dark web search engines simultaneously
+- 🛡️ **VPN Support** - Optional ProtonVPN integration for extra security
+
+## Changelog
+
+**v2.0** - Async rewrite with `aiohttp`, circuit isolation, HEAD pre-checks, browser fingerprinting, error sanitization, advanced CLI.
+
+**v1.0** - Initial release with threaded search/scrape via Tor proxy.
+
+---
+
+## Quick Start
+
+### Prerequisites
+
+1. **Install Tor Browser** from https://www.torproject.org/
+2. **Start Tor Browser** (runs SOCKS5 proxy on port 9150)
+3. **Install Python dependencies:**
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+### Run
+
+```bash
+python main.py "search query"
+```
+
+Or run interactively:
+```bash
+python main.py
+```
+
+---
+
+## Command Line Options
+
+```
+usage: main.py [-h] [-t N] [-l N] [query]
+
+Dark Web Leak Monitor - Search and scrape .onion sites
+
+positional arguments:
+  query              Search query (interactive prompt if not provided)
+
+options:
+  -h, --help         show this help message and exit
+  -t N, --threads N  Number of concurrent tasks (default: 3)
+  -l N, --limit N    Maximum number of URLs to scrape (default: 10)
+```
+
+### Examples
+```bash
+python main.py "data breach"              # Default 3 concurrent tasks
+python main.py "leaked passwords" -t 5    # 5 concurrent tasks
+python main.py -t 10 -l 20 "credentials"  # 10 tasks, scrape 20 URLs
+```
+
+---
+
 ## How It Works
 
 ### Tor Connection
 The application connects to the dark web through **Tor** (The Onion Router):
-- Tor runs as a SOCKS5 proxy on `127.0.0.1:9050`
+- Tor runs as a SOCKS5 proxy on `127.0.0.1:9150`
 - All HTTP requests are routed through this proxy
-- This allows access to `.onion` websites (dark web)
+- **Circuit isolation** via SOCKS5 authentication ensures each request uses a different Tor circuit
 
 ```python
-# How the code connects to Tor (in search.py and scrape.py)
-session.proxies = {
-    "http": "socks5h://127.0.0.1:9050",
-    "https": "socks5h://127.0.0.1:9050"
-}
+# Circuit isolation via unique credentials per request
+connector = ProxyConnector.from_url(
+    f"socks5://stream{stream_id}:x@127.0.0.1:9150",
+    rdns=True  # Resolve DNS through Tor
+)
 ```
 
-### Credentials Needed
-**NONE!** This project requires:
-- ❌ No API keys
-- ❌ No login credentials
-- ❌ No paid services
-- ✅ Only Tor running locally (free and open source)
+### Security Features
 
----
-
-## Running the Project
-
-### Option 1: Docker (Recommended - Works on Windows/Linux/Mac)
-
-**Step 1: Build the Docker image**
-```bash
-cd c:\Users\prama\OneDrive\Documents\robin\thws\dark_web_leak
-docker build -t dark_web_leak .
-```
-
-**Step 2: Run with a search query**
-```bash
-docker run --rm -it dark_web_leak "data breach"
-```
-
-**Step 3: Copy output files from container (optional)**
-```bash
-# Run and keep container to copy files
-docker run --name dwl dark_web_leak "leaked passwords"
-
-# Copy results to your machine
-docker cp dwl:/app/results.txt .
-docker cp dwl:/app/scraped_data.txt .
-
-# Remove container
-docker rm dwl
-```
-
----
-
-### Option 2: Windows (Native)
-
-**Step 1: Install Tor**
-- Download Tor Browser from https://www.torproject.org/
-- OR install Tor service: `winget install TorProject.TorBrowser`
-
-**Step 2: Start Tor**
-```bash
-# If using Tor Browser - just open it
-# If using Tor service:
-tor.exe
-```
-
-**Step 3: Install dependencies**
-```bash
-cd c:\Users\prama\OneDrive\Documents\robin\thws\dark_web_leak
-pip install -r requirements.txt
-```
-
-**Step 4: Run the application**
-```bash
-python main.py "data breach"
-```
-
----
-
-### Option 3: Linux/Mac (Native)
-
-**Step 1: Install Tor**
-```bash
-# Ubuntu/Debian
-sudo apt install tor
-
-# Mac
-brew install tor
-```
-
-**Step 2: Start Tor service**
-```bash
-# Start Tor
-sudo systemctl start tor
-# OR
-tor &
-```
-
-**Step 3: Verify Tor is running**
-```bash
-curl --socks5 127.0.0.1:9050 https://check.torproject.org/
-```
-
-**Step 4: Install dependencies and run**
-```bash
-cd dark_web_leak
-pip install -r requirements.txt
-python main.py "data breach"
-```
-
----
-
-## Output Files
-
-| File | Content |
-|------|---------|
-| `results.txt` | One URL per line |
-| `scraped_data.txt` | Scraped content organized by URL |
-
----
-
-## Project Structure
-
-```
-dark_web_leak/
-├── main.py          # Entry point
-├── search.py        # Dark web search module
-├── scrape.py        # Content scraping module
-├── requirements.txt # Python dependencies
-├── Dockerfile       # Docker configuration
-├── entrypoint.sh    # Docker entrypoint (starts Tor)
-└── README.md        # This file
-```
+| Feature | Description |
+|---------|-------------|
+| Circuit Isolation | Different Tor exit IP per request |
+| Browser Profiles | Full headers (Accept, Accept-Language, Sec-Ch-Ua) |
+| Error Sanitization | Generic messages, no internal paths exposed |
+| DNS over Tor | `rdns=True` prevents DNS leaks |
+| HEAD Pre-checks | Skip dead links before wasting bandwidth |
 
 ---
 
@@ -148,24 +105,184 @@ dark_web_leak/
 │                                                      │
 │  ┌──────────┐     ┌──────────┐     ┌──────────┐    │
 │  │  main.py │────▶│search.py │────▶│scrape.py │    │
+│  │ (argparse)│    │ (async)  │     │ (async)  │    │
 │  └──────────┘     └────┬─────┘     └────┬─────┘    │
 │                        │                 │          │
-│                        ▼                 ▼          │
-│               ┌────────────────────────────┐        │
-│               │   Tor Proxy (port 9050)    │        │
-│               └────────────┬───────────────┘        │
-│                            │                        │
-└────────────────────────────┼────────────────────────┘
-                             │
-                             ▼
-                    ┌─────────────────┐
-                    │   TOR NETWORK   │
-                    │  (Anonymous)    │
-                    └────────┬────────┘
-                             │
-                             ▼
-                    ┌─────────────────┐
-                    │   DARK WEB      │
-                    │ (.onion sites)  │
-                    └─────────────────┘
+│            ┌───────────┴─────────────────┘          │
+│            │  (Concurrent async tasks with          │
+│            │   per-request circuit isolation)       │
+│            ▼                                        │
+│   ┌────────────────────────────────────┐            │
+│   │   Tor Proxy (port 9150)            │            │
+│   │  ┌────────┐ ┌────────┐             │            │
+│   │  │Circuit1│ │Circuit2│ ...         │            │
+│   │  └────────┘ └────────┘             │            │
+│   └────────────┬───────────────────────┘            │
+│                │                                    │
+└────────────────┼────────────────────────────────────┘
+                 │
+                 ▼
+        ┌─────────────────┐
+        │   TOR NETWORK   │
+        │  (Anonymous)    │
+        └────────┬────────┘
+                 │
+                 ▼
+        ┌─────────────────┐
+        │   DARK WEB      │
+        │ (.onion sites)  │
+        └─────────────────┘
+```
+
+---
+
+## Project Structure
+
+```
+aidarkleak/
+├── main.py           # Entry point with CLI (argparse)
+├── search.py         # Async search module (aiohttp + circuit isolation)
+├── scrape.py         # Async scrape module (HEAD checks + fingerprinting)
+├── requirements.txt  # Python dependencies
+├── .env              # Environment variables (Tor/VPN config)
+├── .env.example      # Example environment file
+├── Dockerfile        # Docker configuration
+├── entrypoint.sh     # Docker entrypoint script
+└── output/           # Output folder
+    ├── results.txt       # Discovered .onion URLs
+    └── scraped_data.txt  # Scraped content from URLs
+```
+
+---
+
+## Output Files
+
+All output files are saved to the `output/` folder:
+
+| File | Description |
+|------|-------------|
+| `output/results.txt` | One .onion URL per line |
+| `output/scraped_data.txt` | Scraped text content organized by URL |
+
+---
+
+## Configuration
+
+Create a `.env` file (or copy from `.env.example`):
+
+```env
+# Tor SOCKS5 Proxy
+TOR_PROXY_HOST=127.0.0.1
+TOR_PROXY_PORT=9150
+
+# ProtonVPN (optional)
+PROTONVPN_USER=your_username
+PROTONVPN_PASS=your_password
+```
+
+**Tor Ports:**
+- `9150` - Tor Browser (default)
+- `9050` - Tor service/daemon
+
+---
+
+## Running Options
+
+### Option 1: Local (Windows/Mac/Linux)
+
+1. Start Tor Browser
+2. Run:
+   ```bash
+   python main.py "data breach"
+   python main.py -t 5 -l 15 "credentials"
+   ```
+
+### Option 2: Docker
+
+```bash
+# Build
+docker build -t aidarkleak .
+
+# Run with query
+docker run --rm -it aidarkleak "leaked passwords"
+docker run --rm -it aidarkleak -t 5 "data breach"
+
+# Copy output files
+docker run --name dwl aidarkleak "data breach"
+docker cp dwl:/app/output/ ./output
+docker rm dwl
+```
+
+---
+
+## Individual Modules
+
+Run modules separately:
+
+```bash
+# Search only (saves to output/results.txt)
+python search.py
+
+# Scrape only (reads output/results.txt, saves to output/scraped_data.txt)
+python scrape.py
+```
+
+---
+
+## Useful Commands
+
+**Check if Tor is running:**
+```bash
+# Windows
+netstat -ano | findstr "9150"
+
+# Linux/Mac
+lsof -i :9150
+```
+
+**Test Tor connection:**
+```bash
+curl --socks5 127.0.0.1:9150 https://check.torproject.org/
+```
+
+---
+
+## Requirements
+
+- Python 3.8+
+- Tor Browser or Tor service
+- Internet connection
+
+**Python packages:**
+- aiohttp
+- aiohttp-socks
+- beautifulsoup4
+- PySocks
+- python-dotenv
+- requests
+- urllib3
+
+---
+
+## Security Notes
+
+⚠️ **For maximum anonymity:**
+1. Connect to ProtonVPN (or any VPN) first
+2. Then start Tor Browser
+3. Run this script
+
+This creates: **You → VPN → Tor → Dark Web** (double anonymity layer)
+
+---
+
+## Dependencies
+
+```
+requests
+pysocks
+beautifulsoup4
+urllib3
+python-dotenv
+aiohttp
+aiohttp-socks
 ```
