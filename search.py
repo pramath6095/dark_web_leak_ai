@@ -180,15 +180,19 @@ async def fetch_from_engine(endpoint: str, query: str, stream_id: int) -> list:
         return []
 
 
-async def search_dark_web_async(query: str, max_workers: int = 3) -> list:
+async def search_dark_web_async(query: str, max_workers: int = 3, num_engines: int = None) -> list:
     """Search multiple dark web engines asynchronously and return unique URLs.
     
     Args:
         query: Search query string
         max_workers: Number of concurrent tasks (each uses a different Tor circuit)
+        num_engines: Number of search engines to use (default: all)
     """
+    # Select engines to use
+    engines_to_use = SEARCH_ENGINES[:num_engines] if num_engines else SEARCH_ENGINES
+    
     print(f"\n[+] Searching dark web for: '{query}'")
-    print(f"[+] Using {len(SEARCH_ENGINES)} search engines with {max_workers} concurrent tasks...")
+    print(f"[+] Using {len(engines_to_use)}/{len(SEARCH_ENGINES)} search engines with {max_workers} concurrent tasks...")
     print(f"[+] Circuit isolation: ENABLED\n")
     
     # Create tasks for all search engines
@@ -203,7 +207,7 @@ async def search_dark_web_async(query: str, max_workers: int = 3) -> list:
     
     tasks = [
         limited_fetch(engine, i)
-        for i, engine in enumerate(SEARCH_ENGINES)
+        for i, engine in enumerate(engines_to_use)
     ]
     
     results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -226,9 +230,9 @@ async def search_dark_web_async(query: str, max_workers: int = 3) -> list:
     return unique_urls
 
 
-def search_dark_web(query: str, max_workers: int = 3) -> list:
+def search_dark_web(query: str, max_workers: int = 3, num_engines: int = None) -> list:
     """Synchronous wrapper for async search function."""
-    return asyncio.run(search_dark_web_async(query, max_workers))
+    return asyncio.run(search_dark_web_async(query, max_workers, num_engines))
 
 
 def save_results(urls: list, filename: str = "output/results.txt"):
