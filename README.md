@@ -4,10 +4,19 @@ AI-based monitoring for data leaks on the dark web.
 
 ## Features
 
-- 🔍 **Search** - Searches multiple dark web search engines (.onion)
-- 📄 **Scrape** - Extracts text content from discovered URLs
-- 🔒 **Anonymous** - Routes all traffic through Tor network
+- 🚀 **Async I/O** - High-performance crawling with `aiohttp` (5-10x faster than sync)
+- 🔀 **Circuit Isolation** - Each request uses a different Tor circuit via SOCKS5 auth
+- ⚡ **HEAD Pre-checks** - Skip dead links quickly before full scrape
+- 🎭 **Browser Fingerprinting** - Realistic request headers matching real browsers
+- 🔒 **Error Sanitization** - No internal details leaked in error messages
+- 🔍 **16 Search Engines** - Queries multiple dark web search engines simultaneously
 - 🛡️ **VPN Support** - Optional ProtonVPN integration for extra security
+
+## Changelog
+
+**v2.0** - Async rewrite with `aiohttp`, circuit isolation, HEAD pre-checks, browser fingerprinting, error sanitization, advanced CLI.
+
+**v1.0** - Initial release with threaded search/scrape via Tor proxy.
 
 ---
 
@@ -35,84 +44,95 @@ python main.py
 
 ---
 
+## Command Line Options
+
+```
+usage: main.py [-h] [-t N] [-l N] [query]
+
+Dark Web Leak Monitor - Search and scrape .onion sites
+
+positional arguments:
+  query              Search query (interactive prompt if not provided)
+
+options:
+  -h, --help         show this help message and exit
+  -t N, --threads N  Number of concurrent tasks (default: 3)
+  -l N, --limit N    Maximum number of URLs to scrape (default: 10)
+```
+
+### Examples
+```bash
+python main.py "data breach"              # Default 3 concurrent tasks
+python main.py "leaked passwords" -t 5    # 5 concurrent tasks
+python main.py -t 10 -l 20 "credentials"  # 10 tasks, scrape 20 URLs
+```
+
+---
+
 ## How It Works
 
-```
-┌──────────────────────────────────────────────────────────────────────────────┐
-│                              YOUR MACHINE                                     │
-│                                                                               │
-│  ┌─────────────────────────────────────────────────────────────────────────┐ │
-│  │                         PYTHON APPLICATION                               │ │
-│  │                                                                          │ │
-│  │   ┌──────────┐    1.Start    ┌───────────┐   2.Scrape   ┌───────────┐   │ │
-│  │   │ main.py  │──────────────▶│ search.py │─────────────▶│ scrape.py │   │ │
-│  │   │ (Entry)  │               │ (Search)  │              │ (Scrape)  │   │ │
-│  │   └──────────┘               └─────┬─────┘              └─────┬─────┘   │ │
-│  │                                    │                          │         │ │
-│  │                              3.Query│                   8.Fetch│         │ │
-│  │                                    ▼                          ▼         │ │
-│  │                         ┌─────────────────────────────────────┐         │ │
-│  │                         │      Tor SOCKS5 Proxy               │         │ │
-│  │                         │      127.0.0.1:9150                 │         │ │
-│  │                         └──────────────┬──────────────────────┘         │ │
-│  │                                        │                                │ │
-│  └────────────────────────────────────────┼────────────────────────────────┘ │
-│                                           │                                  │
-│   ┌────────────────┐                      │           ┌──────────────────┐   │
-│   │      .env      │                      │           │  output/         │   │
-│   │ ─────────────  │                      │           │ ───────────────  │   │
-│   │ TOR_PROXY_HOST │                      │           │ results.txt      │   │
-│   │ TOR_PROXY_PORT │                      │           │ scraped_data.txt │   │
-│   │ PROTONVPN_USER │                      │           └────────▲─────────┘   │
-│   │ PROTONVPN_PASS │                      │                    │             │
-│   └────────────────┘                      │          7.Save    │  9.Save     │
-│                                           │          URLs      │  Data       │
-│   ┌────────────────┐                      │                    │             │
-│   │  ProtonVPN     │◀ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┤                    │             │
-│   │  (Optional)    │        4.VPN         │                    │             │
-│   └───────┬────────┘                      │                    │             │
-│           │                               │                    │             │
-└───────────┼───────────────────────────────┼────────────────────┼─────────────┘
-            │                               │                    │
-            │ 5.Encrypted                   │                    │
-            ▼                               ▼                    │
-┌───────────────────────────────────────────────────────────────────────────────┐
-│                              TOR NETWORK                                       │
-│                                                                                │
-│    ┌─────────────┐      ┌─────────────┐      ┌─────────────┐                  │
-│    │ Entry Relay │─────▶│Middle Relay │─────▶│ Exit Relay  │                  │
-│    │   (Guard)   │      │  (Bridge)   │      │  (Exit)     │                  │
-│    └─────────────┘      └─────────────┘      └──────┬──────┘                  │
-│                                                      │                         │
-└──────────────────────────────────────────────────────┼─────────────────────────┘
-                                                       │
-                                            6.Anonymous│Request
-                                                       ▼
-┌───────────────────────────────────────────────────────────────────────────────┐
-│                               DARK WEB                                         │
-│                                                                                │
-│    ┌──────────────────┐    ┌──────────────────┐    ┌──────────────────┐       │
-│    │  Ahmia Search    │    │  Torch Search    │    │  .onion Sites    │       │
-│    │  (Search Engine) │    │  (Search Engine) │    │ (Hidden Services)│       │
-│    └──────────────────┘    └──────────────────┘    └──────────────────┘       │
-│                                                                                │
-└────────────────────────────────────────────────────────────────────────────────┘
+### Tor Connection
+The application connects to the dark web through **Tor** (The Onion Router):
+- Tor runs as a SOCKS5 proxy on `127.0.0.1:9150`
+- All HTTP requests are routed through this proxy
+- **Circuit isolation** via SOCKS5 authentication ensures each request uses a different Tor circuit
 
-DATA FLOW:
-═══════════════════════════════════════════════════════════════════════════════
- 1. main.py starts search.py with query
- 2. search.py triggers scrape.py after finding URLs
- 3. search.py sends query through Tor proxy
- 4. (Optional) Traffic routes through ProtonVPN first
- 5. VPN encrypts and forwards to Tor network
- 6. Tor anonymizes request through 3 relays → Dark Web
- 7. search.py saves discovered .onion URLs to output/results.txt
- 8. scrape.py fetches content from each URL through Tor
- 9. scrape.py saves scraped content to output/scraped_data.txt
-═══════════════════════════════════════════════════════════════════════════════
+```python
+# Circuit isolation via unique credentials per request
+connector = ProxyConnector.from_url(
+    f"socks5://stream{stream_id}:x@127.0.0.1:9150",
+    rdns=True  # Resolve DNS through Tor
+)
 ```
 
-Traffic flow: **You → ProtonVPN (optional) → Tor → Dark Web**
+### Security Features
+
+| Feature | Description |
+|---------|-------------|
+| Circuit Isolation | Different Tor exit IP per request |
+| Browser Profiles | Full headers (Accept, Accept-Language, Sec-Ch-Ua) |
+| Error Sanitization | Generic messages, no internal paths exposed |
+| DNS over Tor | `rdns=True` prevents DNS leaks |
+| HEAD Pre-checks | Skip dead links before wasting bandwidth |
+
+---
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────┐
+│                    YOUR MACHINE                      │
+│                                                      │
+│  ┌──────────┐     ┌──────────┐     ┌──────────┐    │
+│  │  main.py │────▶│search.py │────▶│scrape.py │    │
+│  │ (argparse)│    │ (async)  │     │ (async)  │    │
+│  └──────────┘     └────┬─────┘     └────┬─────┘    │
+│                        │                 │          │
+│            ┌───────────┴─────────────────┘          │
+│            │  (Concurrent async tasks with          │
+│            │   per-request circuit isolation)       │
+│            ▼                                        │
+│   ┌────────────────────────────────────┐            │
+│   │   Tor Proxy (port 9150)            │            │
+│   │  ┌────────┐ ┌────────┐             │            │
+│   │  │Circuit1│ │Circuit2│ ...         │            │
+│   │  └────────┘ └────────┘             │            │
+│   └────────────┬───────────────────────┘            │
+│                │                                    │
+└────────────────┼────────────────────────────────────┘
+                 │
+                 ▼
+        ┌─────────────────┐
+        │   TOR NETWORK   │
+        │  (Anonymous)    │
+        └────────┬────────┘
+                 │
+                 ▼
+        ┌─────────────────┐
+        │   DARK WEB      │
+        │ (.onion sites)  │
+        └─────────────────┘
+```
 
 ---
 
@@ -120,9 +140,9 @@ Traffic flow: **You → ProtonVPN (optional) → Tor → Dark Web**
 
 ```
 aidarkleak/
-├── main.py           # Entry point - runs search + scrape
-├── search.py         # Dark web search module
-├── scrape.py         # Content scraping module
+├── main.py           # Entry point with CLI (argparse)
+├── search.py         # Async search module (aiohttp + circuit isolation)
+├── scrape.py         # Async scrape module (HEAD checks + fingerprinting)
 ├── requirements.txt  # Python dependencies
 ├── .env              # Environment variables (Tor/VPN config)
 ├── .env.example      # Example environment file
@@ -174,6 +194,7 @@ PROTONVPN_PASS=your_password
 2. Run:
    ```bash
    python main.py "data breach"
+   python main.py -t 5 -l 15 "credentials"
    ```
 
 ### Option 2: Docker
@@ -184,6 +205,7 @@ docker build -t aidarkleak .
 
 # Run with query
 docker run --rm -it aidarkleak "leaked passwords"
+docker run --rm -it aidarkleak -t 5 "data breach"
 
 # Copy output files
 docker run --name dwl aidarkleak "data breach"
@@ -232,10 +254,13 @@ curl --socks5 127.0.0.1:9150 https://check.torproject.org/
 - Internet connection
 
 **Python packages:**
-- requests
+- aiohttp
+- aiohttp-socks
 - beautifulsoup4
 - PySocks
 - python-dotenv
+- requests
+- urllib3
 
 ---
 
@@ -247,3 +272,17 @@ curl --socks5 127.0.0.1:9150 https://check.torproject.org/
 3. Run this script
 
 This creates: **You → VPN → Tor → Dark Web** (double anonymity layer)
+
+---
+
+## Dependencies
+
+```
+requests
+pysocks
+beautifulsoup4
+urllib3
+python-dotenv
+aiohttp
+aiohttp-socks
+```
