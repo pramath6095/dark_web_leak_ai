@@ -1,8 +1,3 @@
-"""
-Dark Web Scraper Module
-Reads URLs from results.txt and saves scraped content to scraped_data.txt
-Uses async I/O with HEAD pre-checks and circuit isolation
-"""
 import os
 import asyncio
 import random
@@ -10,21 +5,16 @@ from bs4 import BeautifulSoup
 from aiohttp import ClientSession, ClientTimeout
 from aiohttp_socks import ProxyConnector
 
-# Load environment variables from .env file
 from dotenv import load_dotenv
 load_dotenv()
 
 import warnings
 warnings.filterwarnings("ignore")
 
-# =============================================================================
-# CONFIGURATION (loaded from .env file)
-# =============================================================================
+# tor proxy config
 TOR_PROXY_HOST = os.getenv("TOR_PROXY_HOST", "127.0.0.1")
 TOR_PROXY_PORT = os.getenv("TOR_PROXY_PORT", "9150")
-# =============================================================================
 
-# Browser profiles for realistic fingerprinting
 BROWSER_PROFILES = [
     {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36",
@@ -64,11 +54,9 @@ BROWSER_PROFILES = [
 
 
 def get_browser_headers() -> dict:
-    """Get a random browser profile with matching headers."""
     return random.choice(BROWSER_PROFILES).copy()
 
 
-# Sanitized error messages to prevent information leakage
 ERROR_MESSAGES = {
     "timeout": "[ERROR: Connection timeout]",
     "connection": "[ERROR: Connection failed]",
@@ -80,9 +68,7 @@ ERROR_MESSAGES = {
 
 
 def sanitize_error(exception: Exception) -> str:
-    """Convert exception to sanitized error message without leaking internal details."""
     error_str = str(exception).lower()
-    
     if "timeout" in error_str:
         return ERROR_MESSAGES["timeout"]
     elif "connect" in error_str or "refused" in error_str or "unreachable" in error_str:
@@ -96,28 +82,16 @@ def sanitize_error(exception: Exception) -> str:
 
 
 def get_proxy_connector(stream_id: int) -> ProxyConnector:
-    """Create a SOCKS5 proxy connector with circuit isolation.
-    
-    Args:
-        stream_id: Unique identifier for circuit isolation. Different IDs = different circuits.
-    """
     return ProxyConnector.from_url(
         f"socks5://stream{stream_id}:x@{TOR_PROXY_HOST}:{TOR_PROXY_PORT}",
-        rdns=True  # Resolve DNS through Tor
+        rdns=True
     )
 
 
 async def check_url_alive(url: str, stream_id: int) -> bool:
-    """Check if URL is reachable using HEAD request.
-    
-    This is faster than a full GET and helps skip dead links.
-    
-    Args:
-        url: URL to check
-        stream_id: Unique ID for circuit isolation
-    """
+    # quick HEAD check before doing full scrape
     connector = get_proxy_connector(stream_id)
-    timeout = ClientTimeout(total=10)  # Short timeout for HEAD
+    timeout = ClientTimeout(total=10)
     headers = get_browser_headers()
     
     try:
@@ -125,20 +99,10 @@ async def check_url_alive(url: str, stream_id: int) -> bool:
             async with session.head(url, headers=headers, allow_redirects=True) as response:
                 return response.status < 400
     except:
-        # If HEAD fails, try GET anyway (some servers don't support HEAD)
-        return True
+        return True  # if HEAD fails just try GET anyway
 
 
 async def scrape_url(url: str, stream_id: int) -> tuple:
-    """Scrape content from a single URL asynchronously.
-    
-    Performs HEAD check first, then GET if alive.
-    
-    Args:
-        url: The URL to scrape
-        stream_id: Unique identifier for circuit isolation
-    """
-    # HEAD pre-check
     print(f"  [*] Checking: {url[:45]}... (circuit {stream_id})")
     is_alive = await check_url_alive(url, stream_id)
     
@@ -146,7 +110,6 @@ async def scrape_url(url: str, stream_id: int) -> tuple:
         print(f"  [!] Dead link: {url[:45]}...")
         return url, ERROR_MESSAGES["dead_link"]
     
-    # Full GET request
     connector = get_proxy_connector(stream_id)
     timeout = ClientTimeout(total=45)
     headers = get_browser_headers()
@@ -160,13 +123,11 @@ async def scrape_url(url: str, stream_id: int) -> tuple:
                     html = await response.text()
                     soup = BeautifulSoup(html, "html.parser")
                     
-                    # Remove scripts and styles
+                    # strip out scripts, styles, nav etc
                     for element in soup(["script", "style", "nav", "footer", "header"]):
                         element.extract()
                     
-                    # Get text content
                     text = soup.get_text(separator=' ')
-                    # Normalize whitespace
                     text = ' '.join(text.split())
                     
                     print(f"  [+] Success: {url[:45]}... ({len(text)} chars)")
@@ -181,7 +142,6 @@ async def scrape_url(url: str, stream_id: int) -> tuple:
 
 
 def load_urls(filename: str = "output/results.txt") -> list:
-    """Load URLs from results file."""
     try:
         with open(filename, "r", encoding="utf-8") as f:
             urls = [line.strip() for line in f if line.strip()]
@@ -192,23 +152,15 @@ def load_urls(filename: str = "output/results.txt") -> list:
 
 
 async def scrape_all_async(urls: list, max_workers: int = 3) -> dict:
-    """Scrape multiple URLs concurrently with HEAD pre-checks.
-    
-    Args:
-        urls: List of URLs to scrape
-        max_workers: Number of concurrent tasks (each uses a different Tor circuit)
-    """
     print(f"\n[+] Scraping {len(urls)} URLs with {max_workers} concurrent tasks...")
     print(f"[+] Circuit isolation: ENABLED | HEAD pre-checks: ENABLED\n")
     
-    # Use semaphore to limit concurrency
     semaphore = asyncio.Semaphore(max_workers)
     
     async def limited_scrape(url, stream_id):
         async with semaphore:
             return await scrape_url(url, stream_id)
     
-    # Create tasks with unique stream IDs
     tasks = [
         limited_scrape(url, i)
         for i, url in enumerate(urls)
@@ -216,7 +168,6 @@ async def scrape_all_async(urls: list, max_workers: int = 3) -> dict:
     
     results_list = await asyncio.gather(*tasks, return_exceptions=True)
     
-    # Convert to dictionary
     results = {}
     for i, result in enumerate(results_list):
         if isinstance(result, tuple):
@@ -229,12 +180,10 @@ async def scrape_all_async(urls: list, max_workers: int = 3) -> dict:
 
 
 def scrape_all(urls: list, max_workers: int = 3) -> dict:
-    """Synchronous wrapper for async scrape function."""
     return asyncio.run(scrape_all_async(urls, max_workers))
 
 
 def save_scraped_data(results: dict, filename: str = "output/scraped_data.txt"):
-    """Save scraped data organized by URL."""
     os.makedirs("output", exist_ok=True)
     
     with open(filename, "w", encoding="utf-8") as f:
@@ -258,7 +207,6 @@ if __name__ == "__main__":
         results = scrape_all(urls)
         save_scraped_data(results)
         
-        # Count successful scrapes
         success = sum(1 for v in results.values() if not v.startswith("[ERROR"))
         dead_links = sum(1 for v in results.values() if "Dead link" in v)
         print(f"[+] Successfully scraped {success}/{len(urls)} pages")
