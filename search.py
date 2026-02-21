@@ -1,8 +1,3 @@
-"""
-Dark Web Search Module
-Searches dark web search engines and saves URLs to results.txt
-Uses async I/O for improved performance with circuit isolation
-"""
 import os
 import asyncio
 import random
@@ -11,22 +6,17 @@ from bs4 import BeautifulSoup
 from aiohttp import ClientSession, ClientTimeout
 from aiohttp_socks import ProxyConnector
 
-# Load environment variables from .env file
 from dotenv import load_dotenv
 load_dotenv()
 
 import warnings
 warnings.filterwarnings("ignore")
 
-# =============================================================================
-# CONFIGURATION (loaded from .env file)
-# =============================================================================
+# tor proxy config
 TOR_PROXY_HOST = os.getenv("TOR_PROXY_HOST", "127.0.0.1")
 TOR_PROXY_PORT = os.getenv("TOR_PROXY_PORT", "9150")
-# =============================================================================
 
-# Browser profiles for realistic fingerprinting
-# Each profile includes matching User-Agent and headers
+# browser profiles for fingerprinting
 BROWSER_PROFILES = [
     {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36",
@@ -66,11 +56,10 @@ BROWSER_PROFILES = [
 
 
 def get_browser_headers() -> dict:
-    """Get a random browser profile with matching headers."""
     return random.choice(BROWSER_PROFILES).copy()
 
 
-# Sanitized error messages to prevent information leakage
+# sanitized error messages so we dont leak internal info
 ERROR_MESSAGES = {
     "timeout": "[ERROR: Connection timeout]",
     "connection": "[ERROR: Connection failed]",
@@ -81,9 +70,7 @@ ERROR_MESSAGES = {
 
 
 def sanitize_error(exception: Exception) -> str:
-    """Convert exception to sanitized error message without leaking internal details."""
     error_str = str(exception).lower()
-    
     if "timeout" in error_str:
         return ERROR_MESSAGES["timeout"]
     elif "connect" in error_str or "refused" in error_str or "unreachable" in error_str:
@@ -96,7 +83,7 @@ def sanitize_error(exception: Exception) -> str:
         return ERROR_MESSAGES["unknown"]
 
 
-# Dark web search engines (your extended list)
+# dark web search engines
 SEARCH_ENGINES = [
     "http://juhanurmihxlp77nkq76byazcldy2hlmovfu2epvl5ankdibsot4csyd.onion/search/?q={query}",
     "http://3bbad7fauom4d6sgppalyqddsqbf5u5p56b5k5uk2zxsy3d6ey2jobad.onion/search?q={query}",
@@ -114,34 +101,21 @@ SEARCH_ENGINES = [
     "http://tornetupfu7gcgidt33ftnungxzyfq2pygui5qdoyss34xbgx2qruzid.onion/search?q={query}",
     "http://torlbmqwtudkorme6prgfpmsnile7ug2zm4u3ejpcncxuhpu4k2j4kyd.onion/index.php?a=search&q={query}",
     "http://findtorroveq5wdnipkaojfpqulxnkhblymc7aramjzajcvpptd4rjqd.onion/search?q={query}",
-    "http://leaksndi6i6m2ji6ozulqe4imlrqn6wrgjlhxe25vremvr3aymm4aaid.onion/" #database leaks
-
+    "http://leaksndi6i6m2ji6ozulqe4imlrqn6wrgjlhxe25vremvr3aymm4aaid.onion/"
 ]
 
 
 def get_proxy_connector(stream_id: int) -> ProxyConnector:
-    """Create a SOCKS5 proxy connector with circuit isolation.
-    
-    Args:
-        stream_id: Unique identifier for circuit isolation. Different IDs = different circuits.
-    """
+    # each stream_id gets a different tor circuit
     return ProxyConnector.from_url(
         f"socks5://stream{stream_id}:x@{TOR_PROXY_HOST}:{TOR_PROXY_PORT}",
-        rdns=True  # Resolve DNS through Tor
+        rdns=True
     )
 
 
 async def fetch_from_engine(endpoint: str, query: str, stream_id: int) -> list:
-    """Fetch search results from a single search engine asynchronously.
-    
-    Args:
-        endpoint: Search engine URL template
-        query: Search query (already URL-encoded)
-        stream_id: Unique ID for circuit isolation
-    """
     url = endpoint.format(query=query)
     headers = get_browser_headers()
-    
     connector = get_proxy_connector(stream_id)
     timeout = ClientTimeout(total=40)
     
@@ -158,10 +132,8 @@ async def fetch_from_engine(endpoint: str, query: str, stream_id: int) -> list:
                     for a in soup.find_all('a'):
                         try:
                             href = a.get('href', '')
-                            # Extract .onion links
                             onion_links = re.findall(r'https?://[a-z0-9\.]+\.onion[^\s"\'<>]*', href)
                             for link in onion_links:
-                                # Filter out search engine self-references
                                 if "search" not in link:
                                     links.append(link)
                         except:
@@ -181,24 +153,13 @@ async def fetch_from_engine(endpoint: str, query: str, stream_id: int) -> list:
 
 
 async def search_dark_web_async(query: str, max_workers: int = 3, num_engines: int = None) -> list:
-    """Search multiple dark web engines asynchronously and return unique URLs.
-    
-    Args:
-        query: Search query string
-        max_workers: Number of concurrent tasks (each uses a different Tor circuit)
-        num_engines: Number of search engines to use (default: all)
-    """
-    # Select engines to use
     engines_to_use = SEARCH_ENGINES[:num_engines] if num_engines else SEARCH_ENGINES
     
     print(f"\n[+] Searching dark web for: '{query}'")
     print(f"[+] Using {len(engines_to_use)}/{len(SEARCH_ENGINES)} search engines with {max_workers} concurrent tasks...")
     print(f"[+] Circuit isolation: ENABLED\n")
     
-    # Create tasks for all search engines
     encoded_query = query.replace(" ", "+")
-    
-    # Use semaphore to limit concurrency
     semaphore = asyncio.Semaphore(max_workers)
     
     async def limited_fetch(engine, stream_id):
@@ -212,13 +173,12 @@ async def search_dark_web_async(query: str, max_workers: int = 3, num_engines: i
     
     results = await asyncio.gather(*tasks, return_exceptions=True)
     
-    # Flatten results and remove duplicates
+    # flatten and deduplicate
     all_urls = []
     for result in results:
         if isinstance(result, list):
             all_urls.extend(result)
     
-    # Remove duplicates while preserving order
     seen = set()
     unique_urls = []
     for url in all_urls:
@@ -231,12 +191,10 @@ async def search_dark_web_async(query: str, max_workers: int = 3, num_engines: i
 
 
 def search_dark_web(query: str, max_workers: int = 3, num_engines: int = None) -> list:
-    """Synchronous wrapper for async search function."""
     return asyncio.run(search_dark_web_async(query, max_workers, num_engines))
 
 
 def save_results(urls: list, filename: str = "output/results.txt"):
-    """Save URLs to a text file."""
     os.makedirs("output", exist_ok=True)
     with open(filename, "w", encoding="utf-8") as f:
         for url in urls:
@@ -245,7 +203,6 @@ def save_results(urls: list, filename: str = "output/results.txt"):
 
 
 if __name__ == "__main__":
-    # Example usage
     query = input("Enter search query: ")
     urls = search_dark_web(query)
     if urls:

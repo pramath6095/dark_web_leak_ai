@@ -38,3 +38,7 @@ ENV/
 
 # Output files
 output/
+
+# Internal docs
+overview.md
+robin/
