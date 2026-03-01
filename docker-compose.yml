@@ -1,0 +1,55 @@
+# docker-compose.yml
+# Full system: AI Analysis + Scraper + Query Generator
+# All services communicate over internal Docker network.
+# Only query-generator is exposed to host (for start.py to POST /configure).
+
+version: "3.9"
+
+services:
+  # ── Query Generator ──────────────────────────────────────────────────
+  query-generator:
+    build:
+      context: ./query-generator
+      dockerfile: Dockerfile
+    container_name: query-generator
+    env_file: ./query-generator/.env
+    ports:
+      - "8001:8001" # Exposed to host for start.py /configure
+    networks:
+      - darkleak-net
+    restart: unless-stopped
+
+  # ── AI Analysis Microservice ───────────────────────────────────────────
+  ai-analysis:
+    build:
+      context: ./ai-analysis-service
+      dockerfile: Dockerfile
+    container_name: ai-analysis
+    env_file: ./ai-analysis-service/.env
+    volumes:
+      - ./models:/models # Local model weights
+      - ./logs:/logs # Structured JSON analysis logs
+      - ./output:/output # Analysis results output
+    networks:
+      - darkleak-net
+    depends_on:
+      - query-generator
+    restart: unless-stopped
+
+  # ── Dark-Web Scraper ──────────────────────────────────────────────────
+  scraper:
+    build:
+      context: ./scraper-service
+      dockerfile: Dockerfile
+    container_name: scraper
+    env_file: ./scraper-service/.env
+    networks:
+      - darkleak-net
+    depends_on:
+      - ai-analysis
+      - query-generator
+    restart: unless-stopped
+
+networks:
+  darkleak-net:
+    driver: bridge
