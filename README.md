@@ -1,171 +1,85 @@
-# Dark Web Leak Monitor
+# aidarkleak
 
-AI-based monitoring for data leaks on the dark web.
+Dark web leak monitoring tool. Searches multiple .onion search engines and scrapes content from the results. Uses async I/O and routes everything through Tor.
 
-## How It Works
+> **Note:** This project is still under development. Some features are incomplete or may change.
 
-### Tor Connection
-The application connects to the dark web through **Tor** (The Onion Router):
-- Tor runs as a SOCKS5 proxy on `127.0.0.1:9050`
-- All HTTP requests are routed through this proxy
-- This allows access to `.onion` websites (dark web)
+## What it does
 
-```python
-# How the code connects to Tor (in search.py and scrape.py)
-session.proxies = {
-    "http": "socks5h://127.0.0.1:9050",
-    "https": "socks5h://127.0.0.1:9050"
-}
+- Searches 17 dark web search engines for a given query
+- Extracts .onion URLs from search results
+- Scrapes text content from those URLs
+- Saves everything to text files for analysis
+
+Each request goes through a separate Tor circuit for better anonymity.
+
+## Setup
+
+### Requirements
+- Python 3.8+
+- Tor Browser running (uses SOCKS proxy on port 9150) or Tor daemon (port 9050)
+
+### Install
+```bash
+pip install -r requirements.txt
+cp .env.example .env
 ```
 
-### Credentials Needed
-**NONE!** This project requires:
-- ❌ No API keys
-- ❌ No login credentials
-- ❌ No paid services
-- ✅ Only Tor running locally (free and open source)
+Edit `.env` if your Tor proxy is on a different port.
 
----
-
-## Running the Project
-
-### Option 1: Docker (Recommended - Works on Windows/Linux/Mac)
-
-**Step 1: Build the Docker image**
+### Run
 ```bash
-cd c:\Users\prama\OneDrive\Documents\robin\thws\dark_web_leak
-docker build -t dark_web_leak .
+# interactive mode
+python main.py
+
+# with a query
+python main.py "data breach"
+
+# more options
+python main.py -t 5 -l 20 "leaked credentials"
 ```
 
-**Step 2: Run with a search query**
+Options:
+- `-t` — number of concurrent tasks (default 3)
+- `-e` — how many search engines to use
+- `-l` — max URLs to scrape (default 10)
+
+### Docker
+
+If you don't want to set up Tor yourself, use Docker. It comes with Tor built in.
+
 ```bash
-docker run --rm -it dark_web_leak "data breach"
+docker build -t aidarkleak .
+docker run --rm -it aidarkleak "data breach"
 ```
 
-**Step 3: Copy output files from container (optional)**
+To get the output files out:
 ```bash
-# Run and keep container to copy files
-docker run --name dwl dark_web_leak "leaked passwords"
-
-# Copy results to your machine
-docker cp dwl:/app/results.txt .
-docker cp dwl:/app/scraped_data.txt .
-
-# Remove container
+docker run --name dwl aidarkleak "query"
+docker cp dwl:/app/output/ ./output
 docker rm dwl
 ```
 
----
-
-### Option 2: Windows (Native)
-
-**Step 1: Install Tor**
-- Download Tor Browser from https://www.torproject.org/
-- OR install Tor service: `winget install TorProject.TorBrowser`
-
-**Step 2: Start Tor**
-```bash
-# If using Tor Browser - just open it
-# If using Tor service:
-tor.exe
-```
-
-**Step 3: Install dependencies**
-```bash
-cd c:\Users\prama\OneDrive\Documents\robin\thws\dark_web_leak
-pip install -r requirements.txt
-```
-
-**Step 4: Run the application**
-```bash
-python main.py "data breach"
-```
-
----
-
-### Option 3: Linux/Mac (Native)
-
-**Step 1: Install Tor**
-```bash
-# Ubuntu/Debian
-sudo apt install tor
-
-# Mac
-brew install tor
-```
-
-**Step 2: Start Tor service**
-```bash
-# Start Tor
-sudo systemctl start tor
-# OR
-tor &
-```
-
-**Step 3: Verify Tor is running**
-```bash
-curl --socks5 127.0.0.1:9050 https://check.torproject.org/
-```
-
-**Step 4: Install dependencies and run**
-```bash
-cd dark_web_leak
-pip install -r requirements.txt
-python main.py "data breach"
-```
-
----
-
-## Output Files
-
-| File | Content |
-|------|---------|
-| `results.txt` | One URL per line |
-| `scraped_data.txt` | Scraped content organized by URL |
-
----
-
-## Project Structure
+## Project structure
 
 ```
-dark_web_leak/
-├── main.py          # Entry point
-├── search.py        # Dark web search module
-├── scrape.py        # Content scraping module
-├── requirements.txt # Python dependencies
-├── Dockerfile       # Docker configuration
-├── entrypoint.sh    # Docker entrypoint (starts Tor)
-└── README.md        # This file
+main.py          - entry point, CLI
+search.py        - async search across dark web engines
+scrape.py        - scrapes content from found URLs
+Dockerfile       - container setup with Tor included
+entrypoint.sh    - starts Tor then runs the script
+requirements.txt - dependencies
+.env.example     - config template
+output/          - results go here (gitignored)
 ```
 
----
+## Output
 
-## Architecture
+- `output/results.txt` — list of .onion URLs found
+- `output/scraped_data.txt` — scraped text content organized by URL
 
-```
-┌─────────────────────────────────────────────────────┐
-│                    YOUR MACHINE                      │
-│                                                      │
-│  ┌──────────┐     ┌──────────┐     ┌──────────┐    │
-│  │  main.py │────▶│search.py │────▶│scrape.py │    │
-│  └──────────┘     └────┬─────┘     └────┬─────┘    │
-│                        │                 │          │
-│                        ▼                 ▼          │
-│               ┌────────────────────────────┐        │
-│               │   Tor Proxy (port 9050)    │        │
-│               └────────────┬───────────────┘        │
-│                            │                        │
-└────────────────────────────┼────────────────────────┘
-                             │
-                             ▼
-                    ┌─────────────────┐
-                    │   TOR NETWORK   │
-                    │  (Anonymous)    │
-                    └────────┬────────┘
-                             │
-                             ▼
-                    ┌─────────────────┐
-                    │   DARK WEB      │
-                    │ (.onion sites)  │
-                    └─────────────────┘
-```
+## Dependencies
+
+- aiohttp + aiohttp-socks (async HTTP through Tor)
+- beautifulsoup4 (HTML parsing)
+- python-dotenv (config)

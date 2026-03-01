@@ -1,81 +1,147 @@
-"""
-Dark Web Scraper Module
-Reads URLs from results.txt and saves scraped content to scraped_data.txt
-"""
-import requests
+import os
+import asyncio
 import random
 from bs4 import BeautifulSoup
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
+from aiohttp import ClientSession, ClientTimeout
+from aiohttp_socks import ProxyConnector
+
+from dotenv import load_dotenv
+load_dotenv()
 
 import warnings
 warnings.filterwarnings("ignore")
 
-# User agents for request rotation
-USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/135.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/135.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/135.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:137.0) Gecko/20100101 Firefox/137.0",
+# tor proxy config
+TOR_PROXY_HOST = os.getenv("TOR_PROXY_HOST", "127.0.0.1")
+TOR_PROXY_PORT = os.getenv("TOR_PROXY_PORT", "9150")
+
+BROWSER_PROFILES = [
+    {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate",
+        "Sec-Ch-Ua": '"Chromium";v="135", "Google Chrome";v="135", "Not-A.Brand";v="99"',
+        "Sec-Ch-Ua-Mobile": "?0",
+        "Sec-Ch-Ua-Platform": '"Windows"',
+        "Upgrade-Insecure-Requests": "1",
+    },
+    {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate",
+        "Sec-Ch-Ua": '"Chromium";v="135", "Google Chrome";v="135", "Not-A.Brand";v="99"',
+        "Sec-Ch-Ua-Mobile": "?0",
+        "Sec-Ch-Ua-Platform": '"macOS"',
+        "Upgrade-Insecure-Requests": "1",
+    },
+    {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:137.0) Gecko/20100101 Firefox/137.0",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
+        "Accept-Encoding": "gzip, deflate",
+        "Upgrade-Insecure-Requests": "1",
+    },
+    {
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:137.0) Gecko/20100101 Firefox/137.0",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
+        "Accept-Encoding": "gzip, deflate",
+        "Upgrade-Insecure-Requests": "1",
+    },
 ]
 
 
-def get_tor_session():
-    """Creates a requests Session with Tor SOCKS proxy."""
-    session = requests.Session()
-    retry = Retry(
-        total=3,
-        read=3,
-        connect=3,
-        backoff_factor=0.3,
-        status_forcelist=[500, 502, 503, 504]
+def get_browser_headers() -> dict:
+    return random.choice(BROWSER_PROFILES).copy()
+
+
+ERROR_MESSAGES = {
+    "timeout": "[ERROR: Connection timeout]",
+    "connection": "[ERROR: Connection failed]",
+    "dead_link": "[ERROR: Dead link]",
+    "http": "[ERROR: HTTP error]",
+    "parse": "[ERROR: Parse error]",
+    "unknown": "[ERROR: Request failed]",
+}
+
+
+def sanitize_error(exception: Exception) -> str:
+    error_str = str(exception).lower()
+    if "timeout" in error_str:
+        return ERROR_MESSAGES["timeout"]
+    elif "connect" in error_str or "refused" in error_str or "unreachable" in error_str:
+        return ERROR_MESSAGES["connection"]
+    elif "http" in error_str or "status" in error_str:
+        return ERROR_MESSAGES["http"]
+    elif "parse" in error_str or "decode" in error_str:
+        return ERROR_MESSAGES["parse"]
+    else:
+        return ERROR_MESSAGES["unknown"]
+
+
+def get_proxy_connector(stream_id: int) -> ProxyConnector:
+    return ProxyConnector.from_url(
+        f"socks5://stream{stream_id}:x@{TOR_PROXY_HOST}:{TOR_PROXY_PORT}",
+        rdns=True
     )
-    adapter = HTTPAdapter(max_retries=retry)
-    session.mount("http://", adapter)
-    session.mount("https://", adapter)
-    # Port 9150 = Tor Browser, Port 9050 = Tor service
-    session.proxies = {
-        "http": "socks5h://127.0.0.1:9150",
-        "https": "socks5h://127.0.0.1:9150"
-    }
-    return session
 
 
-def scrape_url(url):
-    """Scrape content from a single URL."""
-    headers = {"User-Agent": random.choice(USER_AGENTS)}
+async def check_url_alive(url: str, stream_id: int) -> bool:
+    # quick HEAD check before doing full scrape
+    connector = get_proxy_connector(stream_id)
+    timeout = ClientTimeout(total=10)
+    headers = get_browser_headers()
     
     try:
-        print(f"  [*] Scraping: {url[:60]}...")
-        session = get_tor_session()
-        response = session.get(url, headers=headers, timeout=45)
+        async with ClientSession(connector=connector, timeout=timeout) as session:
+            async with session.head(url, headers=headers, allow_redirects=True) as response:
+                return response.status < 400
+    except:
+        return True  # if HEAD fails just try GET anyway
+
+
+async def scrape_url(url: str, stream_id: int) -> tuple:
+    print(f"  [*] Checking: {url[:45]}... (circuit {stream_id})")
+    is_alive = await check_url_alive(url, stream_id)
+    
+    if not is_alive:
+        print(f"  [!] Dead link: {url[:45]}...")
+        return url, ERROR_MESSAGES["dead_link"]
+    
+    connector = get_proxy_connector(stream_id)
+    timeout = ClientTimeout(total=45)
+    headers = get_browser_headers()
+    
+    try:
+        print(f"  [*] Scraping: {url[:45]}...")
         
-        if response.status_code == 200:
-            soup = BeautifulSoup(response.text, "html.parser")
-            
-            # Remove scripts and styles
-            for element in soup(["script", "style", "nav", "footer", "header"]):
-                element.extract()
-            
-            # Get text content
-            text = soup.get_text(separator=' ')
-            # Normalize whitespace
-            text = ' '.join(text.split())
-            
-            # Truncate to 3000 chars
-            if len(text) > 3000:
-                text = text[:3000] + "... [TRUNCATED]"
-            
-            return url, text
-        else:
-            return url, f"[ERROR: HTTP {response.status_code}]"
+        async with ClientSession(connector=connector, timeout=timeout) as session:
+            async with session.get(url, headers=headers) as response:
+                if response.status == 200:
+                    html = await response.text()
+                    soup = BeautifulSoup(html, "html.parser")
+                    
+                    # strip out scripts, styles, nav etc
+                    for element in soup(["script", "style", "nav", "footer", "header"]):
+                        element.extract()
+                    
+                    text = soup.get_text(separator=' ')
+                    text = ' '.join(text.split())
+                    
+                    print(f"  [+] Success: {url[:45]}... ({len(text)} chars)")
+                    return url, text
+                else:
+                    return url, f"[ERROR: HTTP {response.status}]"
+                    
+    except asyncio.TimeoutError:
+        return url, ERROR_MESSAGES["timeout"]
     except Exception as e:
-        return url, f"[ERROR: {str(e)[:100]}]"
+        return url, sanitize_error(e)
 
 
-def load_urls(filename="results.txt"):
-    """Load URLs from results file."""
+def load_urls(filename: str = "output/results.txt") -> list:
     try:
         with open(filename, "r", encoding="utf-8") as f:
             urls = [line.strip() for line in f if line.strip()]
@@ -85,23 +151,41 @@ def load_urls(filename="results.txt"):
         return []
 
 
-def scrape_all(urls, max_workers=3):
-    """Scrape multiple URLs concurrently."""
-    print(f"\n[+] Scraping {len(urls)} URLs...\n")
+async def scrape_all_async(urls: list, max_workers: int = 3) -> dict:
+    print(f"\n[+] Scraping {len(urls)} URLs with {max_workers} concurrent tasks...")
+    print(f"[+] Circuit isolation: ENABLED | HEAD pre-checks: ENABLED\n")
+    
+    semaphore = asyncio.Semaphore(max_workers)
+    
+    async def limited_scrape(url, stream_id):
+        async with semaphore:
+            return await scrape_url(url, stream_id)
+    
+    tasks = [
+        limited_scrape(url, i)
+        for i, url in enumerate(urls)
+    ]
+    
+    results_list = await asyncio.gather(*tasks, return_exceptions=True)
     
     results = {}
-    
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {executor.submit(scrape_url, url): url for url in urls}
-        for future in as_completed(futures):
-            url, content = future.result()
+    for i, result in enumerate(results_list):
+        if isinstance(result, tuple):
+            url, content = result
             results[url] = content
+        elif isinstance(result, Exception):
+            results[urls[i]] = f"[ERROR: {str(result)[:100]}]"
     
     return results
 
 
-def save_scraped_data(results, filename="scraped_data.txt"):
-    """Save scraped data organized by URL."""
+def scrape_all(urls: list, max_workers: int = 3) -> dict:
+    return asyncio.run(scrape_all_async(urls, max_workers))
+
+
+def save_scraped_data(results: dict, filename: str = "output/scraped_data.txt"):
+    os.makedirs("output", exist_ok=True)
+    
     with open(filename, "w", encoding="utf-8") as f:
         f.write("=" * 80 + "\n")
         f.write("DARK WEB SCRAPED DATA\n")
@@ -119,12 +203,13 @@ def save_scraped_data(results, filename="scraped_data.txt"):
 if __name__ == "__main__":
     urls = load_urls()
     if urls:
-        print(f"[+] Loaded {len(urls)} URLs from results.txt")
+        print(f"[+] Loaded {len(urls)} URLs from output/results.txt")
         results = scrape_all(urls)
         save_scraped_data(results)
         
-        # Count successful scrapes
         success = sum(1 for v in results.values() if not v.startswith("[ERROR"))
+        dead_links = sum(1 for v in results.values() if "Dead link" in v)
         print(f"[+] Successfully scraped {success}/{len(urls)} pages")
+        print(f"[+] Dead links skipped: {dead_links}")
     else:
         print("[-] No URLs to scrape. Run search.py first.")
