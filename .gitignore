@@ -2,9 +2,14 @@
 .env
 .env.local
 .env.*.local
+query-generator/.env
+ai-analysis-service/.env
+scraper-service/.env
+
+# Setup guide (contains sensitive config instructions)
+SETUP.md
 
 # Python
-__pycache__
 __pycache__/
 *.py[cod]
 *$py.class
@@ -37,12 +42,17 @@ ENV/
 *.swp
 *.swo
 
-# Output files
+# Output and logs
 output/
+logs/
+
+# Models (too large for git)
+models/
 
 # Internal docs
 overview.md
 robin/
 
-__pycache__/
-*.pyc
+# Test cache
+.pytest_cache/
+
