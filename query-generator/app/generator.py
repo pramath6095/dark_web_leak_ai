@@ -20,7 +20,7 @@ from app.state import state
 
 _log = logging.getLogger("querygen.generator")
 
-OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+HF_INFERENCE_URL = "https://router.huggingface.co/hf-inference/models/{model}/v1/chat/completions"
 
 
 # ── Prompt templates ──────────────────────────────────────────────────────
@@ -81,31 +81,61 @@ Return ONLY a JSON array of strings, nothing else. Example:
 """
 
 
-# ── LLM call ─────────────────────────────────────────────────────────────
+import time as _time
 
-def _call_llm(prompt: str) -> str:
-    """Send a prompt to the OpenRouter API and return the response text."""
+
+def _call_llm(prompt: str, max_retries: int = 3) -> str:
+    """Send a prompt to HuggingFace Inference API and return the response text.
+
+    Retries with exponential backoff on 429 Too Many Requests.
+    """
+    url = HF_INFERENCE_URL.format(model=settings.hf_model)
     headers = {
-        "Authorization": f"Bearer {settings.openrouter_api_key}",
+        "Authorization": f"Bearer {settings.hf_api_key}",
         "Content-Type": "application/json",
     }
     payload = {
-        "model": settings.openrouter_model,
+        "model": settings.hf_model,
         "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.8,
         "max_tokens": 2048,
+        "temperature": 0.8,
     }
 
-    resp = httpx.post(
-        OPENROUTER_URL,
-        json=payload,
-        headers=headers,
-        timeout=60.0,
-    )
-    resp.raise_for_status()
-    data = resp.json()
+    last_exc = None
+    for attempt in range(max_retries):
+        try:
+            resp = httpx.post(
+                url,
+                json=payload,
+                headers=headers,
+                timeout=90.0,
+            )
+            if resp.status_code in (429, 503):
+                wait = 5 * (3 ** attempt)  # 5s, 15s, 45s
+                _log.warning(
+                    "HuggingFace %d, retrying in %ds (attempt %d/%d)",
+                    resp.status_code,
+                    wait, attempt + 1, max_retries,
+                )
+                _time.sleep(wait)
+                continue
+            resp.raise_for_status()
+            data = resp.json()
+            return data["choices"][0]["message"]["content"].strip()
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code in (429, 503):
+                wait = 5 * (3 ** attempt)
+                _log.warning("Rate limited, retrying in %ds", wait)
+                _time.sleep(wait)
+                last_exc = exc
+                continue
+            raise
+        except Exception as exc:
+            last_exc = exc
+            _log.warning("LLM call attempt %d failed: %s", attempt + 1, exc)
+            _time.sleep(2)
 
-    return data["choices"][0]["message"]["content"].strip()
+    raise last_exc or RuntimeError("All LLM retries exhausted")
 
 
 def _parse_json_array(text: str) -> list[str]:

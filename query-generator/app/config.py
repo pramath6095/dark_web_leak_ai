@@ -9,11 +9,11 @@ from pydantic import Field
 class Settings(BaseSettings):
     """All tunables loaded from environment variables (or .env file)."""
 
-    # ── LLM (OpenRouter) ──────────────────────────────────────────────────
-    openrouter_api_key: str = Field(default="", alias="OPENROUTER_API_KEY")
-    openrouter_model: str = Field(
-        default="cognitivecomputations/dolphin-mistral-24b-venice-edition:free",
-        alias="OPENROUTER_MODEL",
+    # ── LLM (HuggingFace Inference API) ─────────────────────────────────
+    hf_api_key: str = Field(default="", alias="HF_API_KEY")
+    hf_model: str = Field(
+        default="mistralai/Mistral-Small-24B-Instruct-2501",
+        alias="HF_MODEL",
     )
 
     # ── Query generation ──────────────────────────────────────────────────

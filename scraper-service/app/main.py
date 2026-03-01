@@ -41,6 +41,7 @@ _start_time: float = 0.0
 _last_poll_time: float | None = None
 _cycle_running: bool = False
 _poll_task: asyncio.Task | None = None
+_scraped_urls: set[str] = set()  # global dedup across all cycles
 
 
 # ── Query fetching ─────────────────────────────────────────────────────────
@@ -105,8 +106,16 @@ async def run_scrape_cycle() -> tuple[list[dict[str, Any]], bool]:
                 _log.info("No URLs found for query: '%s'", query)
                 continue
 
+            # Dedup: skip URLs we've already scraped
+            new_urls = [u for u in urls if u not in _scraped_urls]
+            _scraped_urls.update(new_urls)
+            if not new_urls:
+                _log.info("All %d URLs already scraped, skipping query", len(urls))
+                continue
+            _log.info("Found %d URLs, %d new (after dedup)", len(urls), len(new_urls))
+
             # Step 2: Scrape discovered pages (raw HTML)
-            scrape_results = await scrape_all(urls)
+            scrape_results = await scrape_all(new_urls)
 
             # Step 3: Dispatch to analysis in batches of 5
             responses = await dispatch_to_analysis(scrape_results)

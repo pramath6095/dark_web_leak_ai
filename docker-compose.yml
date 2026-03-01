@@ -3,8 +3,6 @@
 # All services communicate over internal Docker network.
 # Only query-generator is exposed to host (for start.py to POST /configure).
 
-version: "3.9"
-
 services:
   # ── Query Generator ──────────────────────────────────────────────────
   query-generator:

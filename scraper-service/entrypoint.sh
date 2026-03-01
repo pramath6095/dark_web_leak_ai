@@ -3,16 +3,24 @@
 # Start Tor in background
 echo "[*] Starting Tor service..."
 tor &
+TOR_PID=$!
 
-# Wait for Tor to bootstrap
+# Wait for Tor to bootstrap (check logs for "Bootstrapped 100%")
 echo "[*] Waiting for Tor to connect..."
-sleep 10
+for i in $(seq 1 30); do
+    if kill -0 $TOR_PID 2>/dev/null; then
+        sleep 1
+    else
+        echo "[-] Tor process exited unexpectedly"
+        exit 1
+    fi
+done
 
-# Check if Tor is running
-if pgrep -x "tor" > /dev/null; then
-    echo "[+] Tor is running on port 9050"
+# Verify Tor process is still alive
+if kill -0 $TOR_PID 2>/dev/null; then
+    echo "[+] Tor is running (PID $TOR_PID)"
 else
-    echo "[-] Failed to start Tor"
+    echo "[-] Tor failed to start"
     exit 1
 fi
 
