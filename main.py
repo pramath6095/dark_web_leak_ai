@@ -1,4 +1,5 @@
 import os
+import time
 import argparse
 from search import search_dark_web, save_results, get_urls_from_results, SEARCH_ENGINES
 from scrape import load_urls, scrape_all, save_scraped_data
@@ -43,6 +44,8 @@ Examples:
                         help="Max URLs to scrape")
     parser.add_argument("--no-ai", action="store_true",
                         help="Skip all AI stages (search + scrape only)")
+    parser.add_argument("-d", "--depth", type=int, default=1, choices=[1, 2],
+                        help="Scrape depth: 1=landing page, 2=follow sublinks (default: 1)")
     return parser.parse_args()
 
 
@@ -122,6 +125,11 @@ def main():
     seen_urls = set()
     
     for i, sq in enumerate(search_queries, 1):
+        # rate limit: delay between keyword searches to avoid getting blocked
+        if i > 1:
+            print(f"\n[*] Waiting 3s before next search (rate limit protection)...")
+            time.sleep(3)
+        
         label = "original" if sq == query and use_ai else f"keyword {i}"
         print(f"\n[*] Searching [{label}]: '{sq}'")
         batch = search_dark_web(sq, max_workers=args.threads, num_engines=num_engines)
@@ -156,7 +164,7 @@ def main():
         
         from ai_engine import filter_results
         print(f"[*] Filtering {len(search_results)} results...")
-        search_results = filter_results(search_query, search_results)
+        search_results = filter_results(query, search_results)
         print(f"[+] Selected top {len(search_results)} relevant results")
     
     # extract plain urls for scraper
@@ -173,12 +181,31 @@ def main():
     urls_to_scrape = urls[:scrape_limit]
     print(f"[*] Scraping first {len(urls_to_scrape)} URLs...")
     
-    scraped_data = scrape_all(urls_to_scrape, max_workers=args.threads)
+    scraped_data = scrape_all(urls_to_scrape, max_workers=args.threads, depth=args.depth)
     save_scraped_data(scraped_data)
     
     # stats
     success = sum(1 for v in scraped_data.values() if not v.startswith("[ERROR"))
     dead_links = sum(1 for v in scraped_data.values() if "Dead link" in v)
+    
+    # ==========================================
+    # STEP 4.5: IOC AUTO-EXTRACTION (always runs)
+    # ==========================================
+    from ioc_extractor import extract_iocs_from_scraped, format_iocs_summary
+    print("\n" + "-" * 50)
+    print("IOC AUTO-EXTRACTION")
+    print("-" * 50)
+    all_iocs = extract_iocs_from_scraped(scraped_data)
+    ioc_count = sum(len(v) for iocs in all_iocs.values() for v in iocs.values())
+    print(f"[+] Extracted {ioc_count} IOCs from {len(all_iocs)} pages")
+    
+    # save IOCs
+    if all_iocs:
+        ioc_text = format_iocs_summary(all_iocs)
+        os.makedirs("output", exist_ok=True)
+        with open("output/iocs.txt", "w", encoding="utf-8") as f:
+            f.write(ioc_text)
+        print(f"[+] IOCs saved to output/iocs.txt")
     
     if use_ai and success > 0:
         # ==========================================
@@ -237,15 +264,17 @@ def main():
     print(f"  - Search Engines: {num_engines}/{total_engines}")
     print(f"  - Concurrent Tasks: {args.threads}")
     print(f"  - AI Pipeline: {'ENABLED' if use_ai else 'DISABLED'}")
+    print(f"  - Scrape Depth: {args.depth}")
     print(f"  - Circuit Isolation: ENABLED")
     print(f"  - HEAD Pre-checks: ENABLED")
     print(f"  - Results Found: {len(search_results)}")
     print(f"  - Dead Links Skipped: {dead_links}")
     print(f"  - URLs Scraped: {success}/{len(urls_to_scrape)}")
-    print(f"  - Results: output/results.txt")
-    print(f"  - Scraped data: output/scraped_data.txt")
+    print(f"  - IOCs Extracted: {ioc_count}")
+    print(f"  - Output:")
+    print(f"      results.txt, scraped_data.txt, iocs.txt")
     if use_ai and success > 0:
-        print(f"  - Intelligence summary: output/summary.txt")
+        print(f"      summary.txt")
     print("=" * 50 + "\n")
 
 

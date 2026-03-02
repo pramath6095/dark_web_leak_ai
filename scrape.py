@@ -108,7 +108,7 @@ async def scrape_url(url: str, stream_id: int) -> tuple:
     
     if not is_alive:
         print(f"  [!] Dead link: {url[:45]}...")
-        return url, ERROR_MESSAGES["dead_link"]
+        return url, ERROR_MESSAGES["dead_link"], []
     
     connector = get_proxy_connector(stream_id)
     timeout = ClientTimeout(total=45)
@@ -123,6 +123,9 @@ async def scrape_url(url: str, stream_id: int) -> tuple:
                     html = await response.text()
                     soup = BeautifulSoup(html, "html.parser")
                     
+                    # extract sublinks before stripping elements (for depth scraping)
+                    sublinks = _extract_sublinks(url, soup)
+                    
                     # strip out scripts, styles, nav etc
                     for element in soup(["script", "style", "nav", "footer", "header"]):
                         element.extract()
@@ -130,15 +133,56 @@ async def scrape_url(url: str, stream_id: int) -> tuple:
                     text = soup.get_text(separator=' ')
                     text = ' '.join(text.split())
                     
-                    print(f"  [+] Success: {url[:45]}... ({len(text)} chars)")
-                    return url, text
+                    print(f"  [+] Success: {url[:45]}... ({len(text)} chars, {len(sublinks)} sublinks)")
+                    return url, text, sublinks
                 else:
-                    return url, f"[ERROR: HTTP {response.status}]"
+                    return url, f"[ERROR: HTTP {response.status}]", []
                     
     except asyncio.TimeoutError:
-        return url, ERROR_MESSAGES["timeout"]
+        return url, ERROR_MESSAGES["timeout"], []
     except Exception as e:
-        return url, sanitize_error(e)
+        return url, sanitize_error(e), []
+
+
+def _extract_sublinks(parent_url: str, soup) -> list:
+    """extract same-domain sublinks from a page, capped at 5 per page to prevent bloat"""
+    import re as _re
+    
+    # get base domain of parent
+    domain_match = _re.search(r'https?://([a-z0-9\.]+\.onion)', parent_url)
+    if not domain_match:
+        return []
+    parent_domain = domain_match.group(1)
+    
+    sublinks = []
+    seen = set()
+    
+    for a in soup.find_all('a', href=True):
+        href = a['href']
+        
+        # resolve relative urls
+        if href.startswith('/'):
+            href = f"http://{parent_domain}{href}"
+        
+        # only follow same-domain .onion links
+        if parent_domain not in href:
+            continue
+        
+        # skip search, login, and nav links
+        skip_patterns = ['search', 'login', 'register', 'signup', 'logout',
+                        'javascript:', 'mailto:', '#', '?page=', '?sort=']
+        if any(p in href.lower() for p in skip_patterns):
+            continue
+        
+        clean = href.rstrip('/')
+        if clean not in seen and clean != parent_url.rstrip('/'):
+            seen.add(clean)
+            sublinks.append(clean)
+        
+        if len(sublinks) >= 5:  # cap at 5 sublinks per page
+            break
+    
+    return sublinks
 
 
 def load_urls(filename: str = "output/results.txt") -> list:
@@ -157,36 +201,81 @@ def load_urls(filename: str = "output/results.txt") -> list:
         return []
 
 
-async def scrape_all_async(urls: list, max_workers: int = 3) -> dict:
+async def scrape_all_async(urls: list, max_workers: int = 3, depth: int = 1) -> dict:
+    """
+    scrape urls with optional depth control.
+    depth=1: landing page only (default, backward compatible)
+    depth=2: follow up to 5 sublinks per page (1 level deep)
+    
+    loop protection:
+    - visited set prevents re-scraping same url
+    - same-domain only (no cross-site following)
+    - max 5 sublinks per page
+    - strict depth cap
+    """
     print(f"\n[+] Scraping {len(urls)} URLs with {max_workers} concurrent tasks...")
-    print(f"[+] Circuit isolation: ENABLED | HEAD pre-checks: ENABLED\n")
+    print(f"[+] Circuit isolation: ENABLED | HEAD pre-checks: ENABLED")
+    print(f"[+] Depth: {depth} {'(sublinks enabled)' if depth > 1 else '(landing page only)'}\n")
     
     semaphore = asyncio.Semaphore(max_workers)
+    visited = set()
+    results = {}
     
     async def limited_scrape(url, stream_id):
         async with semaphore:
             return await scrape_url(url, stream_id)
     
-    tasks = [
-        limited_scrape(url, i)
-        for i, url in enumerate(urls)
-    ]
+    # depth 1: scrape initial urls
+    tasks = []
+    for i, url in enumerate(urls):
+        clean = url.rstrip('/')
+        if clean not in visited:
+            visited.add(clean)
+            tasks.append(limited_scrape(url, i))
     
     results_list = await asyncio.gather(*tasks, return_exceptions=True)
     
-    results = {}
+    all_sublinks = []
     for i, result in enumerate(results_list):
         if isinstance(result, tuple):
-            url, content = result
+            url, content, sublinks = result
             results[url] = content
+            if depth > 1 and sublinks:
+                all_sublinks.extend(sublinks)
         elif isinstance(result, Exception):
             results[urls[i]] = f"[ERROR: {str(result)[:100]}]"
+    
+    # depth 2: follow sublinks (if depth > 1)
+    if depth > 1 and all_sublinks:
+        # filter out already visited
+        new_sublinks = [u for u in all_sublinks if u.rstrip('/') not in visited]
+        
+        if new_sublinks:
+            print(f"\n[+] Depth 2: following {len(new_sublinks)} sublinks...")
+            
+            sub_tasks = []
+            for i, url in enumerate(new_sublinks):
+                clean = url.rstrip('/')
+                if clean not in visited:
+                    visited.add(clean)
+                    sub_tasks.append(limited_scrape(url, i + len(urls)))
+            
+            sub_results = await asyncio.gather(*sub_tasks, return_exceptions=True)
+            
+            for i, result in enumerate(sub_results):
+                if isinstance(result, tuple):
+                    url, content, _ = result  # ignore sublinks at depth 2
+                    results[url] = content
+                elif isinstance(result, Exception):
+                    results[new_sublinks[i]] = f"[ERROR: {str(result)[:100]}]"
+            
+            print(f"[+] Depth 2 complete: scraped {len(sub_results)} additional pages")
     
     return results
 
 
-def scrape_all(urls: list, max_workers: int = 3) -> dict:
-    return asyncio.run(scrape_all_async(urls, max_workers))
+def scrape_all(urls: list, max_workers: int = 3, depth: int = 1) -> dict:
+    return asyncio.run(scrape_all_async(urls, max_workers, depth))
 
 
 def save_scraped_data(results: dict, filename: str = "output/scraped_data.txt"):
