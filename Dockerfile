@@ -4,10 +4,14 @@ FROM python:3.11-slim
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     tor \
+    procps \
     gcc \
     python3-dev \
     libffi-dev && \
     rm -rf /var/lib/apt/lists/*
+
+# Tor daemon runs on 9050 inside Docker (not 9150 which is Tor Browser)
+ENV TOR_PROXY_PORT=9050
 
 WORKDIR /app
 

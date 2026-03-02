@@ -44,6 +44,8 @@ Examples:
                         help="Max URLs to scrape")
     parser.add_argument("--no-ai", action="store_true",
                         help="Skip all AI stages (search + scrape only)")
+    parser.add_argument("--no-download", action="store_true",
+                        help="Skip file header download and analysis")
     parser.add_argument("-d", "--depth", type=int, default=1, choices=[1, 2],
                         help="Scrape depth: 1=landing page, 2=follow sublinks (default: 1)")
     return parser.parse_args()
@@ -181,7 +183,7 @@ def main():
     urls_to_scrape = urls[:scrape_limit]
     print(f"[*] Scraping first {len(urls_to_scrape)} URLs...")
     
-    scraped_data = scrape_all(urls_to_scrape, max_workers=args.threads, depth=args.depth)
+    scraped_data, html_cache = scrape_all(urls_to_scrape, max_workers=args.threads, depth=args.depth)
     save_scraped_data(scraped_data)
     
     # stats
@@ -206,6 +208,9 @@ def main():
         with open("output/iocs.txt", "w", encoding="utf-8") as f:
             f.write(ioc_text)
         print(f"[+] IOCs saved to output/iocs.txt")
+    
+    file_analysis = {}
+    file_verdicts = {}
     
     if use_ai and success > 0:
         # ==========================================
@@ -240,6 +245,57 @@ def main():
             classifications = {}
         
         # ==========================================
+        # STEP 5.5: FILE HEADER ANALYSIS
+        # ==========================================
+        if not args.no_download and classifications:
+            print("\n" + "-" * 50)
+            print("STEP 5.5: FILE HEADER ANALYSIS")
+            print("-" * 50)
+            
+            try:
+                from file_analyzer import analyze_threat_files, format_file_analysis
+                print(f"[*] Scanning threat pages for downloadable files...")
+                file_analysis = analyze_threat_files(html_cache, classifications, max_workers=args.threads)
+                
+                if file_analysis:
+                    print(f"\n[+] Analyzed {len(file_analysis)} files")
+                    
+                    # ==========================================
+                    # STEP 5.7: AI FILE VERIFICATION
+                    # ==========================================
+                    print("\n" + "-" * 50)
+                    print("STEP 5.7: AI FILE VERIFICATION")
+                    print("-" * 50)
+                    
+                    from ai_engine import verify_threat_files
+                    print(f"[*] Verifying {len(file_analysis)} files with AI...")
+                    file_verdicts = verify_threat_files(query, file_analysis)
+                    
+                    if file_verdicts:
+                        # print verdict summary
+                        verdict_counts = {}
+                        for v in file_verdicts.values():
+                            vd = v.get('verdict', 'inconclusive')
+                            verdict_counts[vd] = verdict_counts.get(vd, 0) + 1
+                        
+                        print(f"[+] File verdicts:")
+                        for vd, count in sorted(verdict_counts.items(), key=lambda x: -x[1]):
+                            print(f"    {vd}: {count}")
+                    
+                    # save file analysis report
+                    report = format_file_analysis(file_analysis, file_verdicts)
+                    os.makedirs("output", exist_ok=True)
+                    with open("output/file_analysis.txt", "w", encoding="utf-8") as f:
+                        f.write(report)
+                    print(f"[+] File analysis saved to output/file_analysis.txt")
+                else:
+                    print("[*] No downloadable files found on threat pages")
+            except Exception as e:
+                print(f"[!] File analysis failed: {str(e)[:100]}")
+                import traceback
+                traceback.print_exc()
+        
+        # ==========================================
         # STEP 6: AI INTELLIGENCE SUMMARY
         # ==========================================
         print("\n" + "-" * 50)
@@ -264,6 +320,7 @@ def main():
     print(f"  - Search Engines: {num_engines}/{total_engines}")
     print(f"  - Concurrent Tasks: {args.threads}")
     print(f"  - AI Pipeline: {'ENABLED' if use_ai else 'DISABLED'}")
+    print(f"  - File Analysis: {'ENABLED' if (use_ai and not args.no_download) else 'DISABLED'}")
     print(f"  - Scrape Depth: {args.depth}")
     print(f"  - Circuit Isolation: ENABLED")
     print(f"  - HEAD Pre-checks: ENABLED")
@@ -271,8 +328,14 @@ def main():
     print(f"  - Dead Links Skipped: {dead_links}")
     print(f"  - URLs Scraped: {success}/{len(urls_to_scrape)}")
     print(f"  - IOCs Extracted: {ioc_count}")
+    if file_analysis:
+        confirmed = sum(1 for v in file_verdicts.values() if v.get('verdict') == 'confirmed_threat')
+        print(f"  - Files Analyzed: {len(file_analysis)}")
+        print(f"  - Confirmed Threats: {confirmed}")
     print(f"  - Output:")
     print(f"      results.txt, scraped_data.txt, iocs.txt")
+    if file_analysis:
+        print(f"      file_analysis.txt")
     if use_ai and success > 0:
         print(f"      summary.txt")
     print("=" * 50 + "\n")

@@ -11,10 +11,11 @@ warnings.filterwarnings("ignore")
 
 # per-stage gemini api keys with fallback
 STAGE_KEY_MAP = {
-    "refine":   os.getenv("GEMINI_KEY_REFINE"),
-    "filter":   os.getenv("GEMINI_KEY_FILTER"),
-    "classify": os.getenv("GEMINI_KEY_CLASSIFY"),
-    "summary":  os.getenv("GEMINI_KEY_SUMMARY"),
+    "refine":        os.getenv("GEMINI_KEY_REFINE"),
+    "filter":        os.getenv("GEMINI_KEY_FILTER"),
+    "classify":      os.getenv("GEMINI_KEY_CLASSIFY"),
+    "summary":       os.getenv("GEMINI_KEY_SUMMARY"),
+    "file_analysis": os.getenv("GEMINI_KEY_FILE_ANALYSIS"),
 }
 GEMINI_FALLBACK_KEY = os.getenv("GEMINI_API_KEY")
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
@@ -479,6 +480,118 @@ OUTPUT:"""
     
     return "Summary generation failed. Raw data saved to output/scraped_data.txt."
 
+
+# ============================================================
+# STAGE 5: FILE THREAT VERIFICATION
+# ============================================================
+
+def verify_threat_files(query: str, file_analysis: dict) -> dict:
+    """
+    stage 5: analyze downloaded file headers and torrent metadata to verify threats.
+    returns dict of file_url -> {verdict, confidence, reason}
+    """
+    if not file_analysis:
+        return {}
+    
+    # build compact entries for each file
+    entries = []
+    for i, (url, analysis) in enumerate(file_analysis.items(), 1):
+        if not isinstance(analysis, dict):
+            continue
+        
+        entry_lines = [f"[{i}] URL: {url[:80]}"]
+        
+        ftype = analysis.get('file_type', analysis.get('type', 'unknown'))
+        entry_lines.append(f"  File Type: {ftype}")
+        
+        if 'size_bytes' in analysis and analysis['size_bytes']:
+            entry_lines.append(f"  Size: {analysis['size_bytes']} bytes")
+        
+        if 'total_size' in analysis:
+            entry_lines.append(f"  Total Size: {analysis['total_size']} bytes")
+        
+        if 'files' in analysis and analysis['files']:
+            file_list = ', '.join(
+                f"{f['path']} ({f.get('size', 0)} bytes)" 
+                for f in analysis['files'][:8]
+            )
+            entry_lines.append(f"  Files: {file_list}")
+        
+        if 'header_preview' in analysis and analysis['header_preview']:
+            preview = analysis['header_preview'][:800]
+            entry_lines.append(f"  Header Preview:\n{preview}")
+        
+        if 'name' in analysis:
+            entry_lines.append(f"  Name: {analysis['name']}")
+        
+        if 'info_hash' in analysis and analysis['info_hash']:
+            entry_lines.append(f"  Torrent Hash: {analysis['info_hash']}")
+        
+        entries.append('\n'.join(entry_lines))
+    
+    if not entries:
+        return {}
+    
+    content_block = '\n\n---\n\n'.join(entries)
+    
+    prompt = f"""You are a Threat Verification Analyst examining file headers and metadata from dark web sources.
+
+Investigation Context: {query}
+
+For each file below, determine whether it represents a REAL data leak/threat or is fake/benign.
+You are seeing ONLY the first 4KB header of each file (not the full content), plus torrent metadata where available.
+
+Files to Analyze:
+{content_block}
+
+For each file, classify:
+- verdict: "confirmed_threat" (clearly real leaked data), "likely_fake" (honeypot, fake, or lure), "inconclusive" (can't determine from header alone), "benign" (legitimate/non-threatening content)
+- confidence: "high", "medium", or "low"
+- reason: brief explanation (max 100 chars)
+- data_type: what kind of data this appears to be (e.g., "credential dump", "database export", "financial records", "personal data", "source code", "unknown")
+
+Indicators of REAL threats:
+- Structured data patterns (email:password, CSV with PII columns, SQL table structures)
+- Database schema references, table names with user/customer/account data
+- Large file listings in torrents with data-suggestive names
+- File naming conventions common in actual breaches
+
+Indicators of FAKE/honeypot:
+- Too-perfect formatting, obviously generated data
+- Small files claiming to be massive dumps
+- Known honeypot patterns
+- Generic/template content
+
+Output ONLY valid JSON array, no markdown, no explanation:
+[{{"url": "...", "verdict": "...", "confidence": "...", "reason": "...", "data_type": "..."}}]
+
+JSON:"""
+
+    result = call_llm(prompt, "file_analysis")
+    if result:
+        try:
+            cleaned = result.strip()
+            if cleaned.startswith("```"):
+                cleaned = cleaned.split("\n", 1)[1] if "\n" in cleaned else cleaned
+                cleaned = cleaned.rsplit("```", 1)[0]
+            cleaned = cleaned.strip()
+            
+            verdicts_list = json.loads(cleaned)
+            verdicts = {}
+            for item in verdicts_list:
+                verdicts[item["url"]] = {
+                    "verdict": item.get("verdict", "inconclusive"),
+                    "confidence": item.get("confidence", "low"),
+                    "reason": item.get("reason", ""),
+                    "data_type": item.get("data_type", "unknown"),
+                }
+            return verdicts
+        except (json.JSONDecodeError, KeyError, TypeError) as e:
+            print(f"  [!] Failed to parse file verification JSON: {str(e)[:60]}")
+    
+    # fallback
+    return {url: {"verdict": "inconclusive", "confidence": "low", "reason": "verification unavailable", "data_type": "unknown"}
+            for url in file_analysis}
 
 
 

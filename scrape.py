@@ -108,7 +108,7 @@ async def scrape_url(url: str, stream_id: int) -> tuple:
     
     if not is_alive:
         print(f"  [!] Dead link: {url[:45]}...")
-        return url, ERROR_MESSAGES["dead_link"], []
+        return url, ERROR_MESSAGES["dead_link"], [], ''
     
     connector = get_proxy_connector(stream_id)
     timeout = ClientTimeout(total=45)
@@ -134,14 +134,14 @@ async def scrape_url(url: str, stream_id: int) -> tuple:
                     text = ' '.join(text.split())
                     
                     print(f"  [+] Success: {url[:45]}... ({len(text)} chars, {len(sublinks)} sublinks)")
-                    return url, text, sublinks
+                    return url, text, sublinks, html
                 else:
-                    return url, f"[ERROR: HTTP {response.status}]", []
+                    return url, f"[ERROR: HTTP {response.status}]", [], ''
                     
     except asyncio.TimeoutError:
-        return url, ERROR_MESSAGES["timeout"], []
+        return url, ERROR_MESSAGES["timeout"], [], ''
     except Exception as e:
-        return url, sanitize_error(e), []
+        return url, sanitize_error(e), [], ''
 
 
 def _extract_sublinks(parent_url: str, soup) -> list:
@@ -201,7 +201,7 @@ def load_urls(filename: str = "output/results.txt") -> list:
         return []
 
 
-async def scrape_all_async(urls: list, max_workers: int = 3, depth: int = 1) -> dict:
+async def scrape_all_async(urls: list, max_workers: int = 3, depth: int = 1) -> tuple:
     """
     scrape urls with optional depth control.
     depth=1: landing page only (default, backward compatible)
@@ -212,6 +212,8 @@ async def scrape_all_async(urls: list, max_workers: int = 3, depth: int = 1) -> 
     - same-domain only (no cross-site following)
     - max 5 sublinks per page
     - strict depth cap
+    
+    returns (scraped_data, html_cache) tuple
     """
     print(f"\n[+] Scraping {len(urls)} URLs with {max_workers} concurrent tasks...")
     print(f"[+] Circuit isolation: ENABLED | HEAD pre-checks: ENABLED")
@@ -220,6 +222,7 @@ async def scrape_all_async(urls: list, max_workers: int = 3, depth: int = 1) -> 
     semaphore = asyncio.Semaphore(max_workers)
     visited = set()
     results = {}
+    html_cache = {}
     
     async def limited_scrape(url, stream_id):
         async with semaphore:
@@ -238,8 +241,10 @@ async def scrape_all_async(urls: list, max_workers: int = 3, depth: int = 1) -> 
     all_sublinks = []
     for i, result in enumerate(results_list):
         if isinstance(result, tuple):
-            url, content, sublinks = result
+            url, content, sublinks, raw_html = result
             results[url] = content
+            if raw_html:
+                html_cache[url] = raw_html
             if depth > 1 and sublinks:
                 all_sublinks.extend(sublinks)
         elif isinstance(result, Exception):
@@ -264,17 +269,20 @@ async def scrape_all_async(urls: list, max_workers: int = 3, depth: int = 1) -> 
             
             for i, result in enumerate(sub_results):
                 if isinstance(result, tuple):
-                    url, content, _ = result  # ignore sublinks at depth 2
+                    url, content, _, raw_html = result  # ignore sublinks at depth 2
                     results[url] = content
+                    if raw_html:
+                        html_cache[url] = raw_html
                 elif isinstance(result, Exception):
                     results[new_sublinks[i]] = f"[ERROR: {str(result)[:100]}]"
             
             print(f"[+] Depth 2 complete: scraped {len(sub_results)} additional pages")
     
-    return results
+    return results, html_cache
 
 
-def scrape_all(urls: list, max_workers: int = 3, depth: int = 1) -> dict:
+def scrape_all(urls: list, max_workers: int = 3, depth: int = 1) -> tuple:
+    """returns (scraped_data, html_cache) tuple"""
     return asyncio.run(scrape_all_async(urls, max_workers, depth))
 
 
