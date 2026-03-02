@@ -293,18 +293,18 @@ Output:"""
 def classify_threats(query: str, scraped_data: dict) -> dict:
     """
     stage 3: classify each scraped page into threat categories with severity.
-    this is our differentiator - robin doesn't have this.
-    returns dict of url -> {category, severity, reason}
+    now also extracts evidence text that triggered the classification.
+    returns dict of url -> {category, severity, reason, evidence}
     """
     if not scraped_data:
         return {}
     
-    # build content block - truncate each page to keep within token limits
+    # build content block - 1000 chars per page for better evidence extraction
     entries = []
     for i, (url, content) in enumerate(scraped_data.items(), 1):
         if content.startswith("[ERROR"):
             continue
-        truncated = content[:500] if len(content) > 500 else content
+        truncated = content[:1000] if len(content) > 1000 else content
         entries.append(f"[{i}] URL: {url}\nContent: {truncated}")
     
     if not entries:
@@ -315,6 +315,7 @@ def classify_threats(query: str, scraped_data: dict) -> dict:
     prompt = f"""You are a Threat Classification Engine for dark web intelligence analysis.
 
 Classify each scraped dark web page below into a threat category with a severity level.
+For each page, extract the EXACT text snippet (max 100 chars) that triggered your classification.
 
 Search Context: {query}
 
@@ -337,14 +338,13 @@ Severity:
 - low: generic content, tangential relevance, no actionable data
 
 Output ONLY valid JSON array, no markdown, no explanation:
-[{{"url": "...", "category": "...", "severity": "...", "reason": "one line reason"}}]
+[{{"url": "...", "category": "...", "severity": "...", "reason": "short reason", "evidence": "exact text from page that triggered classification (max 100 chars)"}}]
 
 JSON:"""
 
     result = call_llm(prompt, "classify")
     if result:
         try:
-            # clean up response - strip markdown code blocks if present
             cleaned = result.strip()
             if cleaned.startswith("```"):
                 cleaned = cleaned.split("\n", 1)[1] if "\n" in cleaned else cleaned
@@ -352,20 +352,20 @@ JSON:"""
             cleaned = cleaned.strip()
             
             classifications = json.loads(cleaned)
-            # convert to url-keyed dict
             classified = {}
             for item in classifications:
                 classified[item["url"]] = {
                     "category": item.get("category", "other"),
                     "severity": item.get("severity", "low"),
                     "reason": item.get("reason", ""),
+                    "evidence": item.get("evidence", "")[:150],
                 }
             return classified
         except (json.JSONDecodeError, KeyError, TypeError) as e:
             print(f"  [!] Failed to parse classification JSON: {str(e)[:60]}")
     
-    # fallback: mark everything as unclassified
-    return {url: {"category": "other", "severity": "medium", "reason": "classification unavailable"} 
+    # fallback
+    return {url: {"category": "other", "severity": "medium", "reason": "classification unavailable", "evidence": ""} 
             for url in scraped_data if not scraped_data[url].startswith("[ERROR")}
 
 
@@ -373,34 +373,34 @@ JSON:"""
 # STAGE 4: INTELLIGENCE SUMMARY
 # ============================================================
 
-def generate_summary(query: str, scraped_data: dict, classifications: dict) -> str:
+def generate_summary(query: str, scraped_data: dict, classifications: dict, regex_iocs: dict = None) -> str:
     """
-    stage 4: generate structured threat intelligence report.
-    formatted as an incident response brief - different from robin's generic format.
+    stage 4: generate structured threat intelligence report with evidence.
+    now accepts pre-extracted regex IOCs for more accurate output.
     """
     if not scraped_data:
         return "No data available for summary generation."
     
-    # build enriched content with classifications
+    # build compact entries — less content since classification already captured evidence
     entries = []
     for i, (url, content) in enumerate(scraped_data.items(), 1):
         if content.startswith("[ERROR"):
             continue
         
-        # add classification context if available
         cls = classifications.get(url, {})
         cat = cls.get("category", "unknown")
         sev = cls.get("severity", "unknown")
+        evidence = cls.get("evidence", "N/A")
         
-        truncated = content[:800] if len(content) > 800 else content
-        entries.append(f"[{i}] URL: {url}\nClassification: {cat} | Severity: {sev}\nContent: {truncated}")
+        truncated = content[:400] if len(content) > 400 else content
+        entries.append(f"[{i}] URL: {url}\nClassification: {cat} | Severity: {sev}\nEvidence: {evidence}\nContent: {truncated}")
     
     if not entries:
         return "No valid content to summarize."
     
     content_block = "\n\n---\n\n".join(entries)
     
-    # build classification summary table
+    # classification stats
     cat_counts = {}
     sev_counts = {}
     for cls in classifications.values():
@@ -412,6 +412,16 @@ def generate_summary(query: str, scraped_data: dict, classifications: dict) -> s
     threat_matrix = "Threat Distribution: " + ", ".join(f"{k}: {v}" for k, v in cat_counts.items())
     severity_matrix = "Severity Distribution: " + ", ".join(f"{k}: {v}" for k, v in sev_counts.items())
     
+    # format regex IOCs if provided
+    ioc_block = ""
+    if regex_iocs:
+        ioc_lines = ["Pre-extracted IOCs (regex-verified):"]
+        for url, iocs in regex_iocs.items():
+            for ioc_type, values in iocs.items():
+                for val in values[:5]:  # cap at 5 per type per URL
+                    ioc_lines.append(f"  {ioc_type}: {val} [from: {url[:40]}]")
+        ioc_block = "\n".join(ioc_lines[:40])  # cap total lines
+    
     prompt = f"""You are a Cyber Incident Response Analyst producing an intelligence brief from dark web OSINT data.
 
 Investigation Query: {query}
@@ -419,44 +429,47 @@ Investigation Query: {query}
 {severity_matrix}
 Total Sources Analyzed: {len(entries)}
 
+{ioc_block}
+
 Scraped Intelligence Data:
 {content_block}
 
-Generate a structured INCIDENT RESPONSE BRIEF with these exact sections:
+Generate a structured INCIDENT RESPONSE BRIEF. KEEP ALL OUTPUT CONCISE — avoid long paragraphs.
 
 ## INCIDENT RESPONSE BRIEF
+
 ### Investigation Query
-State the original query and what was investigated.
+State what was investigated (1 line).
 
 ### Executive Summary
-2-3 sentence overview of key findings and overall threat level.
+2-3 sentence overview of key findings and threat level.
 
 ### Threat Matrix
-Table showing: Category | Count | Severity Breakdown
-Use the classification data provided.
+| Category | Count | Severity |
+Use classification data provided. Keep it compact.
 
-### Indicators of Compromise (IOCs)
-Table with columns: IOC Type | Value | Source URL | Context
-Extract: email addresses, domains, IP addresses, cryptocurrency wallets, usernames, phone numbers, file hashes, URLs
-Only include IOCs actually found in the data. If none found, state "No IOCs identified."
+### Evidence Report
+For EACH classified page, show one row:
+| # | Category | Severity | URL (shortened) | Evidence Text |
+The evidence text is the exact snippet that triggered the alert. Use the "Evidence:" field from the data above.
+
+### IOCs (Indicators of Compromise)
+| IOC Type | Value | Source |
+Use the pre-extracted IOCs above. Keep "Source" to domain only (max 30 chars).
+If no IOCs, write "No IOCs identified."
+DO NOT put long text in any table cell. Max 60 chars per cell.
 
 ### Key Findings
-3-5 numbered findings, each with:
-- What was found
-- Why it matters
-- Severity assessment
+3-5 bullet points. Each: what was found + why it matters (1-2 lines max per finding).
 
 ### Recommended Actions
-3-5 specific, actionable next steps for investigation.
-
-### Source References
-List all analyzed URLs with their classification.
+3-5 bullet points of specific next steps.
 
 Rules:
 - Be evidence-based — only report what's in the data
 - Flag NSFW or illegal content without reproducing it
-- Use professional incident response language
-- Do not fabricate IOCs or findings
+- DO NOT put long text dumps in table cells — keep every cell under 60 characters
+- Keep total output under 3000 characters
 
 OUTPUT:"""
 

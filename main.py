@@ -248,7 +248,7 @@ def main():
         
         from ai_engine import generate_summary
         print("[*] Generating incident response brief...")
-        summary = generate_summary(query, scraped_data, classifications)
+        summary = generate_summary(query, scraped_data, classifications, regex_iocs=all_iocs)
         save_summary(summary)
     
     # ==========================================
