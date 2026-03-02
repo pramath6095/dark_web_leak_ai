@@ -106,12 +106,17 @@ def _similarity_local(query: str, chunks: list[str]) -> float:
 
 
 def _similarity_api(query: str, chunks: list[str]) -> float:
+    """Use HuggingFace sentence-similarity API (source_sentence + sentences)."""
     headers = {}
     if settings.hf_api_key:
         headers["Authorization"] = f"Bearer {settings.hf_api_key}"
 
-    all_texts = [query] + chunks
-    payload = {"inputs": all_texts}
+    payload = {
+        "inputs": {
+            "source_sentence": query,
+            "sentences": chunks,
+        }
+    }
 
     resp = httpx.post(
         settings.hf_embedding_url,
@@ -121,11 +126,6 @@ def _similarity_api(query: str, chunks: list[str]) -> float:
     )
     resp.raise_for_status()
 
-    embeddings = np.array(resp.json())
-    query_emb = embeddings[0]
-
-    max_sim = 0.0
-    for chunk_emb in embeddings[1:]:
-        sim = _cosine_similarity(query_emb, chunk_emb)
-        max_sim = max(max_sim, sim)
-    return max_sim
+    # API returns a list of similarity scores, one per sentence
+    scores = resp.json()
+    return float(max(scores)) if scores else 0.0

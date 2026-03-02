@@ -20,7 +20,7 @@ from app.state import state
 
 _log = logging.getLogger("querygen.generator")
 
-HF_INFERENCE_URL = "https://router.huggingface.co/hf-inference/models/{model}/v1/chat/completions"
+HF_INFERENCE_URL = "https://router.huggingface.co/v1/chat/completions"
 
 
 # ── Prompt templates ──────────────────────────────────────────────────────
@@ -89,7 +89,7 @@ def _call_llm(prompt: str, max_retries: int = 3) -> str:
 
     Retries with exponential backoff on 429 Too Many Requests.
     """
-    url = HF_INFERENCE_URL.format(model=settings.hf_model)
+    url = HF_INFERENCE_URL
     headers = {
         "Authorization": f"Bearer {settings.hf_api_key}",
         "Content-Type": "application/json",

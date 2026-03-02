@@ -128,4 +128,10 @@ def _classify_api(text: str, labels: list[str]) -> tuple[str, float]:
     )
     resp.raise_for_status()
     data = resp.json()
+
+    # New HF router returns [{label, score}, ...] (list of objects)
+    # Old API returned {"labels": [...], "scores": [...]} (single dict)
+    if isinstance(data, list):
+        best = max(data, key=lambda x: x["score"])
+        return best["label"], float(best["score"])
     return data["labels"][0], float(data["scores"][0])

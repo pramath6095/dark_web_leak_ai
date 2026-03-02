@@ -14,7 +14,7 @@ class Settings(BaseSettings):
 
     # ── Local model paths (mounted at /models inside Docker) ────────────────
     local_classifier_path: str = Field(
-        default="./models/deberta-v3-base", alias="LOCAL_CLASSIFIER_PATH"
+        default="./models/bge-m3-zeroshot-v2.0", alias="LOCAL_CLASSIFIER_PATH"
     )
     local_embedding_path: str = Field(
         default="./models/bge-m3", alias="LOCAL_EMBEDDING_PATH"
@@ -28,11 +28,11 @@ class Settings(BaseSettings):
     )
     hf_api_key: str = Field(default="", alias="HF_API_KEY")
     hf_classifier_url: str = Field(
-        default="https://api-inference.huggingface.co/models/microsoft/deberta-v3-base",
+        default="https://router.huggingface.co/hf-inference/models/MoritzLaurer/bge-m3-zeroshot-v2.0",
         alias="HF_CLASSIFIER_URL",
     )
     hf_embedding_url: str = Field(
-        default="https://api-inference.huggingface.co/models/BAAI/bge-m3",
+        default="https://router.huggingface.co/hf-inference/models/BAAI/bge-m3",
         alias="HF_EMBEDDING_URL",
     )
 
