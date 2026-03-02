@@ -20,6 +20,15 @@ class ServiceState:
     company_name: str = ""
     company_description: str = ""
 
+    # Organization profile fields (used by detailed prompts)
+    primary_domain: str = ""
+    alt_domains: str = ""
+    email_suffix: str = ""
+    brands: str = ""
+    industry: str = ""
+    aliases: str = ""
+    country: str = ""
+
     # All queries ever generated (preserves insertion order)
     all_queries: list[str] = field(default_factory=list)
 

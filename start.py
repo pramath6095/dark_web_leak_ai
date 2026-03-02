@@ -83,6 +83,13 @@ Examples:
         "--file", "-f",
         help="Path to a text file (line 1 = name, rest = description)",
     )
+    parser.add_argument("--domain", default="", help="Primary domain (e.g. acme.com)")
+    parser.add_argument("--alt-domains", default="", help="Alternative domains, comma-separated")
+    parser.add_argument("--email-suffix", default="", help="Email suffix (e.g. @acme.com)")
+    parser.add_argument("--brands", default="", help="Brand names / products, comma-separated")
+    parser.add_argument("--industry", default="", help="Industry sector")
+    parser.add_argument("--aliases", default="", help="Known aliases or abbreviations")
+    parser.add_argument("--country", default="", help="Headquarters country")
     return parser.parse_args()
 
 
@@ -176,15 +183,18 @@ def wait_for_service(service_name: str, timeout: int = HEALTH_TIMEOUT) -> None:
     sys.exit(1)
 
 
-def configure_query_service(company_name: str, description: str) -> None:
+def configure_query_service(company_name: str, description: str, **extra) -> None:
     """POST company info to the query-generator service."""
     print(f"\n[*] Configuring query service for: '{company_name}'")
     print("[*] Generating queries via LLM (this may take a moment)...")
+    body = {"company_name": company_name, "description": description}
+    # Add optional org profile fields
+    for key in ("primary_domain", "alt_domains", "email_suffix",
+                "brands", "industry", "aliases", "country"):
+        if extra.get(key):
+            body[key] = extra[key]
     try:
-        data = _http_post(
-            "/configure",
-            {"company_name": company_name, "description": description},
-        )
+        data = _http_post("/configure", body)
         print(f"[+] {data['message']}")
         print(f"    Queries generated: {data['queries_generated']}")
         print(f"    Search strings:    {data['search_strings_count']}")
@@ -225,7 +235,16 @@ def main() -> None:
         wait_for_service("Query Generator")
 
         # Step 3: Configure with company info
-        configure_query_service(company_name, description)
+        configure_query_service(
+            company_name, description,
+            primary_domain=args.domain,
+            alt_domains=args.alt_domains,
+            email_suffix=args.email_suffix,
+            brands=args.brands,
+            industry=args.industry,
+            aliases=args.aliases,
+            country=args.country,
+        )
 
         print("\n" + "=" * 60)
         print("  System is now running autonomously!")

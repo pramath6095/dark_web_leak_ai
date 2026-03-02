@@ -28,6 +28,11 @@ class Settings(BaseSettings):
         description="If > this fraction of new queries are duplicates, stop.",
     )
 
+    # ── Search string generation ─────────────────────────────────────────
+    search_strings_min_count: int = Field(default=30, alias="SEARCH_STRINGS_MIN_COUNT")
+    search_strings_max_count: int = Field(default=60, alias="SEARCH_STRINGS_MAX_COUNT")
+    multilingual_query_count: int = Field(default=4, alias="MULTILINGUAL_QUERY_COUNT")
+
     # ── Company info file (optional, read at startup) ─────────────────────
     company_info_file: str = Field(default="", alias="COMPANY_INFO_FILE")
 

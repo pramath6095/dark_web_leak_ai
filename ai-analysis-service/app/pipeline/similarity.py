@@ -64,8 +64,27 @@ def _chunk_text(
 # ── Query builder ──────────────────────────────────────────────────────────
 
 def _build_query(search_strings: list[str]) -> str:
-    joined = ", ".join(search_strings)
-    return f"Data related to {joined}"
+    """Build a rich semantic query from search strings for embedding comparison.
+
+    Categorises strings into domains, emails, and names to produce a more
+    descriptive query that better captures the organisation's profile.
+    """
+    domains = [s for s in search_strings if "." in s and "@" not in s]
+    emails = [s for s in search_strings if "@" in s]
+    names = [s for s in search_strings if "." not in s and "@" not in s]
+
+    parts: list[str] = []
+    if names:
+        parts.append(f"Leaked or breached data related to {', '.join(names[:5])}")
+    if domains:
+        parts.append(f"targeting domains {', '.join(domains[:5])}")
+    if emails:
+        parts.append(f"containing email addresses like {', '.join(emails[:3])}")
+    parts.append(
+        "including credentials, databases, internal documents, "
+        "source code, and personally identifiable information"
+    )
+    return ", ".join(parts) if parts else f"Data related to {', '.join(search_strings)}"
 
 
 # ── Cosine similarity ─────────────────────────────────────────────────────

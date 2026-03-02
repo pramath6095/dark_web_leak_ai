@@ -117,9 +117,18 @@ def analyze_page(
     # Build summary only for relevant pages
     summary: str | None = None
     if is_relevant:
+        label_descriptions = {
+            "credential_leak": "leaked credentials or login data",
+            "database_dump": "a database dump or structured data export",
+            "internal_document": "internal or confidential documents",
+            "general_mention": "general references to the organization",
+        }
+        label_desc = label_descriptions.get(label, label)
+        matched_str = ", ".join(matched[:5])
         summary = (
-            f"Content appears to contain data referencing "
-            f"{', '.join(matched)}. Classified as {label}."
+            f"Content appears to contain {label_desc} referencing "
+            f"{matched_str}. Classification confidence: {cls_confidence:.0%}, "
+            f"semantic similarity: {sim_score:.0%}."
         )
 
     result = PageResult(

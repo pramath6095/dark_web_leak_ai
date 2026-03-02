@@ -87,6 +87,13 @@ app = FastAPI(
 class ConfigureRequest(BaseModel):
     company_name: str = Field(..., min_length=1)
     description: str = Field(default="", description="Detailed company description")
+    primary_domain: str = Field(default="", description="Primary domain (e.g. acme.com)")
+    alt_domains: str = Field(default="", description="Alternative domains, comma-separated")
+    email_suffix: str = Field(default="", description="Email suffix (e.g. @acme.com)")
+    brands: str = Field(default="", description="Brand names / products, comma-separated")
+    industry: str = Field(default="", description="Industry sector")
+    aliases: str = Field(default="", description="Known aliases or abbreviations")
+    country: str = Field(default="", description="Headquarters country")
 
 
 class ConfigureResponse(BaseModel):
@@ -123,6 +130,13 @@ def configure(request: ConfigureRequest) -> ConfigureResponse:
     """Receive company info and generate initial queries + search strings."""
     state.company_name = request.company_name
     state.company_description = request.description
+    state.primary_domain = request.primary_domain
+    state.alt_domains = request.alt_domains
+    state.email_suffix = request.email_suffix
+    state.brands = request.brands
+    state.industry = request.industry
+    state.aliases = request.aliases
+    state.country = request.country
     state.configured = True
 
     # Reset state for fresh generation
