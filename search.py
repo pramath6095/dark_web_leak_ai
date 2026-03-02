@@ -132,10 +132,11 @@ async def fetch_from_engine(endpoint: str, query: str, stream_id: int) -> list:
                     for a in soup.find_all('a'):
                         try:
                             href = a.get('href', '')
+                            title = a.get_text(strip=True)[:100]
                             onion_links = re.findall(r'https?://[a-z0-9\.]+\.onion[^\s"\'<>]*', href)
                             for link in onion_links:
-                                if "search" not in link:
-                                    links.append(link)
+                                if "search" not in link and len(title) > 2:
+                                    links.append({"url": link, "title": title})
                         except:
                             continue
                     
@@ -173,40 +174,56 @@ async def search_dark_web_async(query: str, max_workers: int = 3, num_engines: i
     
     results = await asyncio.gather(*tasks, return_exceptions=True)
     
-    # flatten and deduplicate
-    all_urls = []
+    # flatten and deduplicate by url
+    all_results = []
     for result in results:
         if isinstance(result, list):
-            all_urls.extend(result)
+            all_results.extend(result)
     
     seen = set()
-    unique_urls = []
-    for url in all_urls:
-        clean_url = url.rstrip('/')
+    unique_results = []
+    for item in all_results:
+        clean_url = item["url"].rstrip('/')
         if clean_url not in seen:
             seen.add(clean_url)
-            unique_urls.append(clean_url)
+            unique_results.append({"url": clean_url, "title": item["title"]})
     
-    return unique_urls
+    return unique_results
 
 
 def search_dark_web(query: str, max_workers: int = 3, num_engines: int = None) -> list:
     return asyncio.run(search_dark_web_async(query, max_workers, num_engines))
 
 
-def save_results(urls: list, filename: str = "output/results.txt"):
+def save_results(results: list, filename: str = "output/results.txt"):
     os.makedirs("output", exist_ok=True)
     with open(filename, "w", encoding="utf-8") as f:
-        for url in urls:
-            f.write(url + "\n")
-    print(f"\n[+] Saved {len(urls)} URLs to {filename}")
+        for item in results:
+            if isinstance(item, dict):
+                f.write(f"{item['url']} | {item.get('title', 'Untitled')}\n")
+            else:
+                f.write(item + "\n")
+    print(f"\n[+] Saved {len(results)} results to {filename}")
+
+
+def get_urls_from_results(results: list) -> list:
+    """extract plain url list from search results for scraper compatibility"""
+    if not results:
+        return []
+    if isinstance(results[0], dict):
+        return [item["url"] for item in results]
+    return results
 
 
 if __name__ == "__main__":
     query = input("Enter search query: ")
-    urls = search_dark_web(query)
-    if urls:
-        save_results(urls)
-        print(f"\n[+] Found {len(urls)} unique URLs")
+    results = search_dark_web(query)
+    if results:
+        save_results(results)
+        print(f"\n[+] Found {len(results)} unique results")
+        for i, item in enumerate(results[:5], 1):
+            print(f"  {i}. {item['title'][:50]} — {item['url'][:50]}")
+        if len(results) > 5:
+            print(f"  ... and {len(results) - 5} more")
     else:
         print("\n[-] No results found. Check if Tor is running.")

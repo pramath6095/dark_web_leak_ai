@@ -144,7 +144,13 @@ async def scrape_url(url: str, stream_id: int) -> tuple:
 def load_urls(filename: str = "output/results.txt") -> list:
     try:
         with open(filename, "r", encoding="utf-8") as f:
-            urls = [line.strip() for line in f if line.strip()]
+            urls = []
+            for line in f:
+                line = line.strip()
+                if line:
+                    # handle new format: "url | title"
+                    url = line.split(" | ")[0].strip()
+                    urls.append(url)
         return urls
     except FileNotFoundError:
         print(f"[-] File not found: {filename}")
