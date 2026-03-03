@@ -215,6 +215,55 @@ def get_urls_from_results(results: list) -> list:
     return results
 
 
+async def check_engines_async(max_workers: int = 5) -> dict:
+    """health-check all search engines. returns dict of url -> {status, response_time_ms}"""
+    import time as _time
+    
+    print(f"\n[+] Checking {len(SEARCH_ENGINES)} search engines...")
+    print(f"[+] Using Tor proxy at {TOR_PROXY_HOST}:{TOR_PROXY_PORT}\n")
+    
+    semaphore = asyncio.Semaphore(max_workers)
+    results = {}
+    
+    async def check_one(engine, stream_id):
+        async with semaphore:
+            url = engine.format(query="test")
+            domain = engine.split('/')[2][:25]
+            connector = get_proxy_connector(stream_id)
+            timeout = ClientTimeout(total=20)
+            headers = get_browser_headers()
+            
+            start = _time.time()
+            try:
+                async with ClientSession(connector=connector, timeout=timeout) as session:
+                    async with session.get(url, headers=headers) as response:
+                        elapsed = int((_time.time() - start) * 1000)
+                        status = "alive" if response.status == 200 else f"http_{response.status}"
+                        results[engine] = {"status": status, "ms": elapsed, "domain": domain}
+                        icon = "+" if status == "alive" else "!"
+                        print(f"  [{icon}] {domain:<25} {status:<10} {elapsed}ms")
+            except asyncio.TimeoutError:
+                elapsed = int((_time.time() - start) * 1000)
+                results[engine] = {"status": "timeout", "ms": elapsed, "domain": domain}
+                print(f"  [x] {domain:<25} timeout    {elapsed}ms")
+            except Exception:
+                elapsed = int((_time.time() - start) * 1000)
+                results[engine] = {"status": "dead", "ms": elapsed, "domain": domain}
+                print(f"  [x] {domain:<25} dead       {elapsed}ms")
+    
+    tasks = [check_one(engine, i) for i, engine in enumerate(SEARCH_ENGINES)]
+    await asyncio.gather(*tasks)
+    
+    # summary
+    alive = sum(1 for r in results.values() if r["status"] == "alive")
+    print(f"\n[+] Results: {alive}/{len(SEARCH_ENGINES)} engines alive")
+    return results
+
+
+def check_engines(max_workers: int = 5) -> dict:
+    return asyncio.run(check_engines_async(max_workers))
+
+
 if __name__ == "__main__":
     query = input("Enter search query: ")
     results = search_dark_web(query)

@@ -144,6 +144,46 @@ async def scrape_url(url: str, stream_id: int) -> tuple:
         return url, sanitize_error(e), [], ''
 
 
+async def scrape_url_paginated(url: str, stream_id: int, max_pages: int = 1) -> tuple:
+    """scrape a URL and follow pagination links up to max_pages."""
+    all_text = ""
+    all_sublinks = []
+    raw_html = ""
+    current_url = url
+    visited_pages = set()
+    
+    for page_num in range(max_pages):
+        if current_url in visited_pages:
+            break
+        visited_pages.add(current_url)
+        
+        result_url, text, sublinks, html = await scrape_url(current_url, stream_id + page_num)
+        
+        if text.startswith("[ERROR"):
+            if page_num == 0:
+                return url, text, sublinks, html
+            break
+        
+        all_text += ("\n\n" if all_text else "") + text
+        all_sublinks.extend(sublinks)
+        if page_num == 0:
+            raw_html = html  # only cache first page HTML
+        
+        # detect next page
+        if max_pages > 1 and html:
+            soup = BeautifulSoup(html, "html.parser")
+            next_url = _detect_next_page(soup, current_url)
+            if next_url and next_url not in visited_pages:
+                print(f"    [→] Following page {page_num + 2}: {next_url[:45]}...")
+                current_url = next_url
+            else:
+                break
+        else:
+            break
+    
+    return url, all_text, all_sublinks, raw_html
+
+
 def _extract_sublinks(parent_url: str, soup) -> list:
     """extract same-domain sublinks from a page, capped at 5 per page to prevent bloat"""
     import re as _re
@@ -203,6 +243,41 @@ def _extract_sublinks(parent_url: str, soup) -> list:
     return sublinks
 
 
+def _detect_next_page(soup, current_url: str) -> str:
+    """detect pagination 'next page' link. returns URL or None."""
+    import re as _re
+    from urllib.parse import urljoin
+    
+    # method 1: rel="next" link
+    link = soup.find('a', rel='next')
+    if link and link.get('href'):
+        return urljoin(current_url, link['href'])
+    
+    # method 2: link text patterns
+    next_patterns = ['next', 'next page', '»', '›', '→', '>>']
+    for a in soup.find_all('a', href=True):
+        text = a.get_text(strip=True).lower()
+        if text in next_patterns:
+            href = urljoin(current_url, a['href'])
+            if href != current_url:
+                return href
+    
+    # method 3: page number sequence (find current page, get next)
+    pagination = soup.find(['nav', 'div', 'ul'], class_=_re.compile(r'pag', _re.IGNORECASE))
+    if pagination:
+        links = pagination.find_all('a', href=True)
+        active = pagination.find(['span', 'strong', 'li'], class_=_re.compile(r'active|current', _re.IGNORECASE))
+        if active:
+            active_text = active.get_text(strip=True)
+            if active_text.isdigit():
+                next_num = str(int(active_text) + 1)
+                for a in links:
+                    if a.get_text(strip=True) == next_num:
+                        return urljoin(current_url, a['href'])
+    
+    return None
+
+
 def load_urls(filename: str = "output/results.txt") -> list:
     try:
         with open(filename, "r", encoding="utf-8") as f:
@@ -219,11 +294,12 @@ def load_urls(filename: str = "output/results.txt") -> list:
         return []
 
 
-async def scrape_all_async(urls: list, max_workers: int = 3, depth: int = 1) -> tuple:
+async def scrape_all_async(urls: list, max_workers: int = 3, depth: int = 1, max_pages: int = 1) -> tuple:
     """
-    scrape urls with optional depth control.
+    scrape urls with optional depth control and pagination.
     depth=1: landing page only (default, backward compatible)
     depth=2: follow up to 5 sublinks per page (1 level deep)
+    max_pages: follow pagination up to N pages per URL (default: 1 = no pagination)
     
     loop protection:
     - visited set prevents re-scraping same url
@@ -235,7 +311,10 @@ async def scrape_all_async(urls: list, max_workers: int = 3, depth: int = 1) -> 
     """
     print(f"\n[+] Scraping {len(urls)} URLs with {max_workers} concurrent tasks...")
     print(f"[+] Circuit isolation: ENABLED | HEAD pre-checks: ENABLED")
-    print(f"[+] Depth: {depth} {'(sublinks enabled)' if depth > 1 else '(landing page only)'}\n")
+    print(f"[+] Depth: {depth} {'(sublinks enabled)' if depth > 1 else '(landing page only)'}")
+    if max_pages > 1:
+        print(f"[+] Pagination: up to {max_pages} pages per URL")
+    print()
     
     semaphore = asyncio.Semaphore(max_workers)
     visited = set()
@@ -244,7 +323,7 @@ async def scrape_all_async(urls: list, max_workers: int = 3, depth: int = 1) -> 
     
     async def limited_scrape(url, stream_id):
         async with semaphore:
-            return await scrape_url(url, stream_id)
+            return await scrape_url_paginated(url, stream_id, max_pages=max_pages)
     
     # depth 1: scrape initial urls
     tasks = []
@@ -299,9 +378,9 @@ async def scrape_all_async(urls: list, max_workers: int = 3, depth: int = 1) -> 
     return results, html_cache
 
 
-def scrape_all(urls: list, max_workers: int = 3, depth: int = 1) -> tuple:
+def scrape_all(urls: list, max_workers: int = 3, depth: int = 1, max_pages: int = 1) -> tuple:
     """returns (scraped_data, html_cache) tuple"""
-    return asyncio.run(scrape_all_async(urls, max_workers, depth))
+    return asyncio.run(scrape_all_async(urls, max_workers, depth, max_pages=max_pages))
 
 
 def save_scraped_data(results: dict, filename: str = "output/scraped_data.txt"):

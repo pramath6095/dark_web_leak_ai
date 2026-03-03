@@ -22,13 +22,9 @@ DOWNLOADABLE_EXTENSIONS = {
     # text/data
     '.txt', '.csv', '.tsv', '.sql', '.json', '.ndjson', '.jsonl',
     '.xml', '.log', '.yml', '.yaml',
-    # config files
+    # config files (often contain secrets)
     '.ini', '.conf', '.cfg', '.env', '.htaccess', '.properties',
-    # markup / docs
-    '.html', '.htm', '.md', '.rst',
-    # source code
-    '.py', '.js', '.php', '.rb', '.java', '.c', '.cpp', '.h', '.go',
-    '.sh', '.bat', '.ps1', '.pl', '.r', '.swift', '.kt', '.cs',
+    # NOTE: .html/.htm/.php EXCLUDED — they are navigation links, not data files
     # documents
     '.pdf', '.doc', '.docx', '.xlsx', '.xls', '.pptx', '.ppt',
     '.odt', '.ods', '.odp', '.rtf',
@@ -156,11 +152,20 @@ def detect_file_type(header_bytes: bytes) -> str:
 def extract_file_links(base_url: str, html: str) -> list:
     """
     extract downloadable file links and torrent/magnet links from HTML.
+    filters out navigation links (.php pages, index files, etc.)
     returns list of dicts: [{url, filename, link_text, type}]
     """
     soup = BeautifulSoup(html, "html.parser")
     files = []
     seen = set()
+    
+    # patterns that indicate navigation, not data files
+    SKIP_PATTERNS = {
+        'index.', 'login.', 'register.', 'signup.', 'profile.',
+        'search.', 'admin.', 'contact.', 'about.', 'faq.',
+        'help.', 'rules.', 'terms.', 'privacy.', 'sitemap.',
+        'page.', 'thread.', 'topic.', 'category.', 'forum.',
+    }
     
     for a in soup.find_all('a', href=True):
         href = a['href'].strip()
@@ -184,6 +189,15 @@ def extract_file_links(base_url: str, html: str) -> list:
         # check for downloadable extensions
         parsed = urlparse(full_url)
         path_lower = parsed.path.lower()
+        basename_lower = os.path.basename(path_lower)
+        
+        # skip navigation-like paths
+        if any(basename_lower.startswith(p) for p in SKIP_PATTERNS):
+            continue
+        
+        # skip if URL has typical page query params (?id=, ?page=, ?action=)
+        if parsed.query and any(k in parsed.query.lower() for k in ['page=', 'id=', 'action=', 'view=', 'cat=']):
+            continue
         
         matched_ext = None
         for ext in DOWNLOADABLE_EXTENSIONS:
@@ -205,6 +219,68 @@ def extract_file_links(base_url: str, html: str) -> list:
             break
     
     return files
+
+
+# patterns that indicate the page contains threat data inline (no file links needed)
+_THREAT_KEYWORDS = re.compile(
+    r'(database|dump|leak|breach|combolist|stealer.?log|credential|fullz|'
+    r'records|million.?user|billion.?user|sql.?dump|email.?pass|'
+    r'customer.?data|citizen.?data|passport|ssn|credit.?card|'
+    r'bank.?account|wallet|seed.?phrase|private.?key|'
+    r'for.?sale|pay.?with|buy.?now|price|cryptocurrency)',
+    re.IGNORECASE
+)
+
+def extract_inline_threats(base_url: str, text: str) -> list:
+    """
+    detect inline threat data on pages that don't have downloadable file links.
+    marketplace listings, paste dumps, credential lists posted as text etc.
+    returns list of dicts similar to file analysis results.
+    """
+    if not text or len(text) < 50:
+        return []
+    
+    # count threat keyword hits
+    hits = _THREAT_KEYWORDS.findall(text)
+    if len(hits) < 3:
+        return []
+    
+    # extract distinct threat items from the page
+    entries = []
+    
+    # look for database/leak size mentions  (e.g. "533 million users", "115M records")
+    size_pattern = re.compile(
+        r'(\d[\d,.]*)\s*(million|billion|M|B|K|TB|GB|MB)\s*'
+        r'(users?|records?|rows?|entries?|contacts?|accounts?|emails?|passwords?|citizens?|people|lines?)?',
+        re.IGNORECASE
+    )
+    size_matches = size_pattern.findall(text)
+    
+    # look for price indicators (marketplace)
+    price_pattern = re.compile(r'\$\s*(\d+)', re.IGNORECASE)
+    prices = price_pattern.findall(text)
+    
+    # create a single analysis entry for the page
+    entry = {
+        'url': base_url,
+        'file_type': 'inline_listing',
+        'status': 'success',
+        'threat_by_type': True,
+        'extension': '',
+        'link_text': '',
+        'header_preview': text[:2000],
+        'size_bytes': len(text),
+        'inline_data': {
+            'keyword_hits': len(hits),
+            'unique_keywords': list(set(h.lower() for h in hits))[:15],
+            'data_sizes': [f"{m[0]} {m[1]} {m[2]}".strip() for m in size_matches[:10]],
+            'price_indicators': [f"${p}" for p in prices[:5]],
+            'is_marketplace': len(prices) > 0,
+        }
+    }
+    entries.append(entry)
+    
+    return entries
 
 
 def _extract_magnet_name(magnet_uri: str) -> str:
@@ -333,6 +409,15 @@ async def download_file_header(url: str, stream_id: int) -> dict:
                 # read only header bytes
                 data = await response.content.read(HEADER_SIZE)
                 
+                # reject HTML pages served by web servers (e.g. .php pages)
+                content_type = result['content_type'].lower()
+                if 'text/html' in content_type:
+                    data_start = data[:100].decode('utf-8', errors='replace').strip().lower()
+                    if data_start.startswith(('<!doctype', '<html', '<head', '<?xml')):
+                        result['file_type'] = 'html_page'
+                        result['status'] = 'skipped_html'
+                        return result
+                
                 # detect type from magic bytes
                 result['file_type'] = detect_file_type(data)
                 result['status'] = 'success'
@@ -425,7 +510,23 @@ async def analyze_threat_files_async(
             break
     
     if not all_file_links:
-        print("  [*] No downloadable files found on threat pages")
+        # no downloadable files — try detecting inline threat data (marketplace listings, paste dumps)
+        print("  [*] No downloadable files found, scanning for inline threat data...")
+        inline_results = {}
+        for url in threat_urls:
+            html = html_cache.get(url, '')
+            if not html:
+                continue
+            threats = extract_inline_threats(url, html)
+            for t in threats:
+                inline_results[t['url']] = t
+                print(f"  [+] {url[:45]}... -> inline listing ({t['inline_data']['keyword_hits']} threat keywords)")
+        
+        if inline_results:
+            print(f"\n  [+] Found {len(inline_results)} pages with inline threat data")
+            return inline_results
+        
+        print("  [*] No threat data found on any pages")
         return {}
     
     print(f"\n  [*] Sampling headers from {total_files} files...")
@@ -469,6 +570,12 @@ async def analyze_threat_files_async(
     for result in task_results:
         if isinstance(result, tuple):
             file_url, analysis = result
+            
+            # skip HTML pages that got through
+            if isinstance(analysis, dict) and analysis.get('status') == 'skipped_html':
+                print(f"  [-] {file_url[:50]}... → skipped (HTML page)")
+                continue
+            
             results[file_url] = analysis
             
             # print status
@@ -522,7 +629,20 @@ def format_file_analysis(results: dict, verdicts: dict = None) -> str:
                 lines.append(f"  Link Text: {analysis['link_text']}")
             
             if analysis.get('threat_by_type'):
-                lines.append(f"  !! THREAT BY FILE TYPE — inherently suspicious on dark web")
+                lines.append(f"  !! THREAT BY FILE TYPE -- inherently suspicious on dark web")
+            
+            # inline threat data (marketplace listings, paste dumps)
+            if 'inline_data' in analysis:
+                idata = analysis['inline_data']
+                lines.append(f"  ** INLINE THREAT DATA DETECTED ({idata['keyword_hits']} threat keyword hits)")
+                if idata.get('is_marketplace'):
+                    lines.append(f"  ** This is a MARKETPLACE listing")
+                if idata.get('data_sizes'):
+                    lines.append(f"  Data sizes mentioned: {', '.join(idata['data_sizes'][:8])}")
+                if idata.get('price_indicators'):
+                    lines.append(f"  Prices listed: {', '.join(idata['price_indicators'])}")
+                if idata.get('unique_keywords'):
+                    lines.append(f"  Threat keywords: {', '.join(idata['unique_keywords'][:10])}")
             
             if 'size_bytes' in analysis and analysis['size_bytes']:
                 size = analysis['size_bytes']

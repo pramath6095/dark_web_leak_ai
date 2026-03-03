@@ -28,20 +28,67 @@ GEMINI_RETRY_DELAYS = [2, 5, 10]
 STAGE_MAX_TOKENS = {
     "refine":        512,
     "filter":        512,
-    "classify":      2048,
+    "classify":      3072,
     "summary":       4096,
-    "file_analysis": 2048,
+    "file_analysis": 3072,
 }
+
+# stages that output JSON — use response_mime_type for reliable parsing
+STAGE_JSON_MODE = {"classify", "file_analysis"}
+
+# per-key rate limit tracking: key -> {last_429: float, cooldown_until: float, fails: int}
+_key_state = {}
+
+
+def _is_key_available(key: str) -> bool:
+    """check if a key is not in cooldown"""
+    state = _key_state.get(key)
+    if not state:
+        return True
+    return time.time() >= state.get("cooldown_until", 0)
+
+
+def _record_rate_limit(key: str):
+    """record a 429 and set exponential cooldown"""
+    state = _key_state.setdefault(key, {"fails": 0, "cooldown_until": 0})
+    state["fails"] = state.get("fails", 0) + 1
+    state["last_429"] = time.time()
+    # exponential cooldown: 30s, 60s, 120s
+    cooldown = min(30 * (2 ** (state["fails"] - 1)), 120)
+    state["cooldown_until"] = time.time() + cooldown
+    print(f"  [!] Key ...{key[-4:]} rate limited, cooldown {cooldown}s")
+
+
+def _record_success(key: str):
+    """reset fail count on success"""
+    if key in _key_state:
+        _key_state[key]["fails"] = 0
 
 
 def _get_gemini_key(stage: str) -> str:
-    """get the api key for a specific stage, falling back to the general key"""
-    key = STAGE_KEY_MAP.get(stage)
-    if key and key.strip():
-        return key.strip()
+    """get the best available api key, skipping keys in cooldown. rotates across all keys."""
+    # try stage-specific key first
+    candidates = []
+    stage_key = STAGE_KEY_MAP.get(stage)
+    if stage_key and stage_key.strip():
+        candidates.append(stage_key.strip())
+    # try fallback key
     if GEMINI_FALLBACK_KEY and GEMINI_FALLBACK_KEY.strip():
-        return GEMINI_FALLBACK_KEY.strip()
-    return None
+        fb = GEMINI_FALLBACK_KEY.strip()
+        if fb not in candidates:
+            candidates.append(fb)
+    # try keys from other stages
+    for other_stage, other_key in STAGE_KEY_MAP.items():
+        if other_key and other_key.strip():
+            k = other_key.strip()
+            if k not in candidates:
+                candidates.append(k)
+    # return first available (not in cooldown)
+    for key in candidates:
+        if _is_key_available(key):
+            return key
+    # all in cooldown — return first anyway (will retry)
+    return candidates[0] if candidates else None
 
 
 def _ollama_available() -> bool:
@@ -65,31 +112,38 @@ def _get_ollama_model() -> str:
     return None
 
 
-def _call_gemini(prompt: str, api_key: str, stage: str = "summary") -> str:
-    """call gemini api with retry logic for rate limits"""
+def _call_gemini(prompt: str, api_key: str, stage: str = "summary", temperature: float = 0.3) -> str:
+    """call gemini api with retry logic for rate limits and optional JSON mode"""
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={api_key}"
     
     max_tokens = STAGE_MAX_TOKENS.get(stage, 4096)
+    gen_config = {
+        "temperature": temperature,
+        "maxOutputTokens": max_tokens,
+    }
+    # JSON mode for structured output stages
+    if stage in STAGE_JSON_MODE:
+        gen_config["responseMimeType"] = "application/json"
+    
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {
-            "temperature": 0.3,
-            "maxOutputTokens": max_tokens,
-        }
+        "generationConfig": gen_config
     }
     
     for attempt in range(GEMINI_MAX_RETRIES):
         try:
             response = requests.post(url, json=payload, timeout=60)
             
-            # handle rate limit with retry
+            # handle rate limit with retry + tracking
             if response.status_code == 429:
+                _record_rate_limit(api_key)
                 delay = GEMINI_RETRY_DELAYS[attempt] if attempt < len(GEMINI_RETRY_DELAYS) else 10
                 print(f"  [!] Rate limited (429). Retrying in {delay}s... (attempt {attempt + 1}/{GEMINI_MAX_RETRIES})")
                 time.sleep(delay)
                 continue
             
             response.raise_for_status()
+            _record_success(api_key)
             data = response.json()
             
             candidates = data.get("candidates", [])
@@ -131,16 +185,16 @@ def _call_ollama(prompt: str, model: str) -> str:
         raise
 
 
-def call_llm(prompt: str, stage: str) -> str:
+def call_llm(prompt: str, stage: str, temperature: float = 0.3) -> str:
     """
     call the best available llm for a given stage.
-    fallback chain: stage-specific gemini key -> GEMINI_API_KEY -> ollama -> error
+    fallback chain: stage-specific gemini key -> other keys -> ollama -> error
     """
     # try gemini first
     gemini_key = _get_gemini_key(stage)
     if gemini_key:
         try:
-            return _call_gemini(prompt, gemini_key, stage=stage)
+            return _call_gemini(prompt, gemini_key, stage=stage, temperature=temperature)
         except Exception:
             print(f"  [!] Gemini failed for stage '{stage}', trying fallback...")
     
@@ -158,48 +212,81 @@ def call_llm(prompt: str, stage: str) -> str:
     return None
 
 
+def _call_llm_json_retry(prompt: str, stage: str) -> list:
+    """
+    call LLM for JSON output with automatic retry on parse failure.
+    on failure, retries with temperature=0.1 and stricter instructions.
+    """
+    result = call_llm(prompt, stage)
+    if not result:
+        return None
+    
+    # first parse attempt
+    try:
+        return _parse_classification_json(result)
+    except (json.JSONDecodeError, ValueError) as e:
+        print(f"  [!] JSON parse failed: {str(e)[:50]}. Retrying with temp=0.1...")
+    
+    # retry with lower temperature and stricter prompt
+    retry_prompt = "Output ONLY raw JSON array. No markdown fences, no explanation, no text before or after.\n\n" + prompt
+    result = call_llm(retry_prompt, stage, temperature=0.1)
+    if not result:
+        return None
+    
+    try:
+        return _parse_classification_json(result)
+    except (json.JSONDecodeError, ValueError) as e:
+        print(f"  [!] JSON retry also failed: {str(e)[:50]}")
+        return None
+
+
 # ============================================================
 # STAGE 1: QUERY REFINEMENT
 # ============================================================
 
 def refine_query(query: str) -> list:
     """
-    stage 1: generate 3 generic dark web search keywords from user input.
-    strips company names and specifics — those are searched separately via original query.
-    returns list of 3 keyword strings.
+    stage 1: generate threat-intelligence-optimized search strings for dark web.
+    returns list of keyword strings targeting real threat data.
     """
-    prompt = f"""Dark web query specialist. Generate exactly 3 generic dark web search keywords from the user's input.
+    prompt = f"""Dark web threat intelligence analyst. Generate exactly 5 search strings to find REAL threats related to the user's input on dark web search engines (.onion).
 
 Rules:
-1. Output ONLY 3 keywords, one per line — no numbering, no explanation, no quotes, 2-4 words each
-2. Use dark web terminology: breach, dump, leak, cred, paste, combo, database, exposed, stolen, hack, fullz, stealer
-3. REMOVE all company/person names — keep only generic threat terms. Each keyword targets a different angle.
+1. Output ONLY 5 search strings, one per line. No numbering, no explanation, no quotes.
+2. Each 2-5 words. KEEP the target name in every query.
+3. Each query MUST target a DIFFERENT threat surface:
+   - Data breach / leak exposure (breach, leak, exposed, compromised, hacked)
+   - Ransomware / extortion (ransomware, ransom, lockbit, alphv, leak blog)
+   - Credential exposure (credentials, login, combolist, stealer logs, infostealer)
+   - Forum/marketplace chatter (selling, for sale, access, exploit, vulnerability)
+   - Paste / dump sites (paste, dump, database, records, dox)
+4. Think like a threat actor — use terms they actually use on forums and paste sites.
 
-Example — Input: "Company ABC email data leak" → Output:
-email leak dump
-data breach database
-credentials combo list
+Example - Input: "Accenture" - Output:
+Accenture data breach leaked
+Accenture ransomware leak blog
+Accenture credentials stealer logs
+Accenture access selling forum
+Accenture database dump paste
 
 User input: {query}"""
 
     result = call_llm(prompt, "refine")
     if result:
-        # parse 3 keywords from response
-        lines = [line.strip().strip('"').strip("'").strip('-').strip() 
+        import re
+        lines = [line.strip().strip('"').strip("'").strip('-').strip()
                  for line in result.strip().split("\n") if line.strip()]
-        # filter out empty and numbering artifacts
         keywords = []
         for line in lines:
-            # remove leading numbers like "1." or "1)"
-            import re
-            cleaned = re.sub(r'^\d+[\.\)]\s*', '', line).strip()
+            cleaned = re.sub(r'^\d+[\.\)\-]\s*', '', line).strip()
             if cleaned and len(cleaned) > 2:
                 keywords.append(cleaned)
-        
+
         if keywords:
-            return keywords[:3]  # cap at 3
-    
-    return [query]  # fallback to original query as single keyword
+            return keywords[:5]
+
+
+    return [query]
 
 
 # ============================================================
@@ -349,20 +436,18 @@ Output ONLY valid JSON array, no markdown, no explanation:
 
 JSON:"""
         
-        result = call_llm(prompt, "classify")
-        if result:
+        parsed = _call_llm_json_retry(prompt, "classify")
+        if parsed:
             try:
-                classifications = _parse_classification_json(result)
-                for item in classifications:
+                for item in parsed:
                     all_classified[item["url"]] = {
                         "category": item.get("category", "other"),
                         "severity": item.get("severity", "low"),
                         "reason": item.get("reason", "")[:60],
                         "evidence": item.get("evidence", "")[:80],
                     }
-            except (json.JSONDecodeError, KeyError, TypeError) as e:
-                print(f"  [!] Failed to parse batch {batch_num} JSON: {str(e)[:60]}")
-                # fallback for this batch only
+            except (KeyError, TypeError) as e:
+                print(f"  [!] Failed to process batch {batch_num}: {str(e)[:60]}")
                 for url, _ in batch:
                     if url not in all_classified:
                         all_classified[url] = {"category": "other", "severity": "medium", "reason": "parse failed", "evidence": ""}
@@ -625,32 +710,40 @@ Output ONLY valid JSON array, no markdown, no explanation:
 
 JSON:"""
 
-    result = call_llm(prompt, "file_analysis")
-    if result:
-        try:
-            cleaned = result.strip()
-            if cleaned.startswith("```"):
-                cleaned = cleaned.split("\n", 1)[1] if "\n" in cleaned else cleaned
-                cleaned = cleaned.rsplit("```", 1)[0]
-            cleaned = cleaned.strip()
-            
-            verdicts_list = json.loads(cleaned)
-            verdicts = {}
-            for item in verdicts_list:
-                verdicts[item["url"]] = {
-                    "verdict": item.get("verdict", "inconclusive"),
-                    "confidence": item.get("confidence", "low"),
-                    "reason": item.get("reason", ""),
-                    "data_type": item.get("data_type", "unknown"),
-                }
-            return verdicts
-        except (json.JSONDecodeError, KeyError, TypeError) as e:
-            print(f"  [!] Failed to parse file verification JSON: {str(e)[:60]}")
-    
-    # fallback
-    return {url: {"verdict": "inconclusive", "confidence": "low", "reason": "verification unavailable", "data_type": "unknown"}
-            for url in file_analysis}
+    # build reverse lookup: truncated url -> full url (AI may return truncated)
+    url_map = {}
+    for url_full in file_analysis:
+        url_map[url_full] = url_full
+        url_map[url_full[:80]] = url_full
 
+    parsed = _call_llm_json_retry(prompt, "file_analysis")
+    if parsed:
+        try:
+            verdicts = {}
+            for item in parsed:
+                ai_url = item.get("url", "")
+                # match truncated or full URL back to original
+                full_url = url_map.get(ai_url)
+                if not full_url:
+                    # fuzzy match: find the original URL that starts with what AI returned
+                    for orig in file_analysis:
+                        if orig.startswith(ai_url) or ai_url.startswith(orig[:40]):
+                            full_url = orig
+                            break
+                if full_url:
+                    verdicts[full_url] = {
+                        "verdict": item.get("verdict", "inconclusive"),
+                        "confidence": item.get("confidence", "low"),
+                        "reason": item.get("reason", ""),
+                        "data_type": item.get("data_type", "unknown"),
+                    }
+            return verdicts
+        except (KeyError, TypeError) as e:
+            print(f"  [!] Failed to process file verification: {str(e)[:60]}")
+    
+    # fallback — cover ALL files
+    return {u: {"verdict": "inconclusive", "confidence": "low", "reason": "verification unavailable", "data_type": "unknown"}
+            for u in file_analysis}
 
 
 def get_provider_info() -> dict:

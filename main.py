@@ -49,6 +49,12 @@ Examples:
                         help="Skip file header download and analysis")
     parser.add_argument("-d", "--depth", type=int, default=1, choices=[1, 2],
                         help="Scrape depth: 1=landing page, 2=follow sublinks (default: 1)")
+    parser.add_argument("-p", "--pages", type=int, default=1, metavar="N",
+                        help="Max pages to follow per URL via pagination (default: 1, max: 10)")
+    parser.add_argument("--check-engines", action="store_true",
+                        help="Test which search engines are alive and exit")
+    parser.add_argument("--dashboard", action="store_true",
+                        help="Launch web dashboard instead of CLI")
     return parser.parse_args()
 
 
@@ -62,8 +68,25 @@ def save_summary(summary: str, filename: str = "output/summary.txt"):
 
 def main():
     args = parse_args()
+    
+    # handle special modes
+    if args.check_engines:
+        from search import check_engines
+        check_engines()
+        return
+    
+    if args.dashboard:
+        try:
+            from dashboard import app
+            print("\n[+] Starting web dashboard on http://localhost:5000")
+            app.run(host="0.0.0.0", port=5000, debug=True)
+        except ImportError:
+            print("[-] Flask not installed. Run: pip install flask")
+        return
+    
     total_engines = len(SEARCH_ENGINES)
     use_ai = not args.no_ai
+    max_pages = min(args.pages, 10)  # cap at 10
     
     print("\n" + "=" * 50)
     print("   DARK WEB LEAK MONITOR")
@@ -184,7 +207,7 @@ def main():
     urls_to_scrape = urls[:scrape_limit]
     print(f"[*] Scraping first {len(urls_to_scrape)} URLs...")
     
-    scraped_data, html_cache = scrape_all(urls_to_scrape, max_workers=args.threads, depth=args.depth)
+    scraped_data, html_cache = scrape_all(urls_to_scrape, max_workers=args.threads, depth=args.depth, max_pages=max_pages)
     save_scraped_data(scraped_data)
     
     # stats
@@ -337,6 +360,8 @@ def main():
     print(f"  - Scrape Depth: {args.depth}")
     print(f"  - Circuit Isolation: ENABLED")
     print(f"  - HEAD Pre-checks: ENABLED")
+    if max_pages > 1:
+        print(f"  - Pagination: up to {max_pages} pages/URL")
     print(f"  - Results Found: {len(search_results)}")
     print(f"  - Dead Links Skipped: {dead_links}")
     print(f"  - URLs Scraped: {success}/{len(urls_to_scrape)}")
