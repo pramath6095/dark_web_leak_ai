@@ -291,32 +291,67 @@ Output:"""
 # STAGE 3: THREAT CLASSIFICATION (NEW - not in Robin)
 # ============================================================
 
+def _parse_classification_json(result: str) -> list:
+    """parse classification JSON from LLM response, handling markdown fences"""
+    cleaned = result.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.split("\n", 1)[1] if "\n" in cleaned else cleaned
+        cleaned = cleaned.rsplit("```", 1)[0]
+    cleaned = cleaned.strip()
+    return json.loads(cleaned)
+
+
 def classify_threats(query: str, scraped_data: dict) -> dict:
     """
     stage 3: classify each scraped page into threat categories with severity.
-    now also extracts evidence text that triggered the classification.
+    processes in batches of 6 to prevent JSON truncation.
+    uses cleaned content for better signal.
     returns dict of url -> {category, severity, reason, evidence}
     """
     if not scraped_data:
         return {}
     
-    # build content block - 1000 chars per page for better evidence extraction
+    # clean content before classification
+    try:
+        from content_cleaner import clean_content, extract_meaningful_section
+        use_cleaner = True
+    except ImportError:
+        use_cleaner = False
+    
+    # build entries with cleaned content
     entries = []
-    for i, (url, content) in enumerate(scraped_data.items(), 1):
+    for url, content in scraped_data.items():
         if content.startswith("[ERROR"):
             continue
-        truncated = content[:1000] if len(content) > 1000 else content
-        entries.append(f"[{i}] URL: {url}\nContent: {truncated}")
+        if use_cleaner:
+            content = extract_meaningful_section(clean_content(content), max_chars=800)
+        else:
+            content = content[:800]
+        entries.append((url, content))
     
     if not entries:
         return {}
     
-    content_block = "\n\n".join(entries)
+    # batch processing — 6 pages per LLM call to prevent JSON truncation
+    BATCH_SIZE = 6
+    all_classified = {}
     
-    prompt = f"""You are a Threat Classification Engine for dark web intelligence analysis.
+    for batch_start in range(0, len(entries), BATCH_SIZE):
+        batch = entries[batch_start:batch_start + BATCH_SIZE]
+        batch_num = (batch_start // BATCH_SIZE) + 1
+        total_batches = (len(entries) + BATCH_SIZE - 1) // BATCH_SIZE
+        
+        if total_batches > 1:
+            print(f"  [*] Classifying batch {batch_num}/{total_batches} ({len(batch)} pages)...")
+        
+        content_block = "\n\n".join(
+            f"[{i+1}] URL: {url}\nContent: {content}" 
+            for i, (url, content) in enumerate(batch)
+        )
+        
+        prompt = f"""You are a Threat Classification Engine for dark web intelligence analysis.
 
-Classify each scraped dark web page below into a threat category with a severity level.
-For each page, extract the EXACT text snippet (max 100 chars) that triggered your classification.
+Classify each scraped dark web page below. For each, extract the KEY PHRASE (max 50 chars) that is the actual threat indicator — not boilerplate or navigation text.
 
 Search Context: {query}
 
@@ -327,7 +362,7 @@ Categories (pick one per page):
 - data_breach: leaked databases, credential dumps, exposed records
 - credentials: combo lists, login credentials, passwords, email:pass
 - malware: malware samples, ransomware, stealers, RATs, exploits
-- market_listing: items for sale (cards, accounts, services)
+- market_listing: items for sale (cards, accounts, services, hacking)
 - forum_post: discussion threads, tutorials, announcements
 - paste: paste sites with raw data dumps
 - other: doesn't fit above categories
@@ -339,53 +374,65 @@ Severity:
 - low: generic content, tangential relevance, no actionable data
 
 Output ONLY valid JSON array, no markdown, no explanation:
-[{{"url": "...", "category": "...", "severity": "...", "reason": "short reason", "evidence": "exact text from page that triggered classification (max 100 chars)"}}]
+[{{"url": "...", "category": "...", "severity": "...", "reason": "short reason max 30 chars", "evidence": "key threat phrase from page max 50 chars"}}]
 
 JSON:"""
-
-    result = call_llm(prompt, "classify")
-    if result:
-        try:
-            cleaned = result.strip()
-            if cleaned.startswith("```"):
-                cleaned = cleaned.split("\n", 1)[1] if "\n" in cleaned else cleaned
-                cleaned = cleaned.rsplit("```", 1)[0]
-            cleaned = cleaned.strip()
-            
-            classifications = json.loads(cleaned)
-            classified = {}
-            for item in classifications:
-                classified[item["url"]] = {
-                    "category": item.get("category", "other"),
-                    "severity": item.get("severity", "low"),
-                    "reason": item.get("reason", ""),
-                    "evidence": item.get("evidence", "")[:150],
-                }
-            return classified
-        except (json.JSONDecodeError, KeyError, TypeError) as e:
-            print(f"  [!] Failed to parse classification JSON: {str(e)[:60]}")
+        
+        result = call_llm(prompt, "classify")
+        if result:
+            try:
+                classifications = _parse_classification_json(result)
+                for item in classifications:
+                    all_classified[item["url"]] = {
+                        "category": item.get("category", "other"),
+                        "severity": item.get("severity", "low"),
+                        "reason": item.get("reason", "")[:60],
+                        "evidence": item.get("evidence", "")[:80],
+                    }
+            except (json.JSONDecodeError, KeyError, TypeError) as e:
+                print(f"  [!] Failed to parse batch {batch_num} JSON: {str(e)[:60]}")
+                # fallback for this batch only
+                for url, _ in batch:
+                    if url not in all_classified:
+                        all_classified[url] = {"category": "other", "severity": "medium", "reason": "parse failed", "evidence": ""}
+        else:
+            # LLM unavailable — fallback for this batch
+            for url, _ in batch:
+                all_classified[url] = {"category": "other", "severity": "medium", "reason": "LLM unavailable", "evidence": ""}
     
-    # fallback
-    return {url: {"category": "other", "severity": "medium", "reason": "classification unavailable", "evidence": ""} 
-            for url in scraped_data if not scraped_data[url].startswith("[ERROR")}
+    return all_classified
 
 
 # ============================================================
 # STAGE 4: INTELLIGENCE SUMMARY
 # ============================================================
 
-def generate_summary(query: str, scraped_data: dict, classifications: dict, regex_iocs: dict = None) -> str:
+def generate_summary(query: str, scraped_data: dict, classifications: dict, regex_iocs: dict = None, actor_contacts: dict = None) -> str:
     """
     stage 4: generate structured threat intelligence report with evidence.
-    now accepts pre-extracted regex IOCs for more accurate output.
+    includes threat actor contacts and pre-extracted IOCs.
     """
     if not scraped_data:
         return "No data available for summary generation."
     
-    # build compact entries — less content since classification already captured evidence
+    # clean content for summary
+    try:
+        from content_cleaner import clean_content, extract_meaningful_section
+        use_cleaner = True
+    except ImportError:
+        use_cleaner = False
+    
+    # build compact entries with cleaned content and classification data
+    # de-duplicate mirror pages (same page title from different .onion mirrors)
+    seen_titles = set()
     entries = []
     for i, (url, content) in enumerate(scraped_data.items(), 1):
         if content.startswith("[ERROR"):
+            continue
+        
+        # skip navigation/meta pages that snuck through
+        skip_suffixes = ['/whats-new', '/whats-new/posts', '/members', '/rules']
+        if any(url.rstrip('/').endswith(s) for s in skip_suffixes):
             continue
         
         cls = classifications.get(url, {})
@@ -393,8 +440,18 @@ def generate_summary(query: str, scraped_data: dict, classifications: dict, rege
         sev = cls.get("severity", "unknown")
         evidence = cls.get("evidence", "N/A")
         
-        truncated = content[:400] if len(content) > 400 else content
-        entries.append(f"[{i}] URL: {url}\nClassification: {cat} | Severity: {sev}\nEvidence: {evidence}\nContent: {truncated}")
+        if use_cleaner:
+            display_content = extract_meaningful_section(clean_content(content), max_chars=400)
+        else:
+            display_content = content[:400]
+        
+        # de-dup by first 80 chars of cleaned content (catches mirror sites)
+        content_sig = display_content[:80].strip().lower()
+        if content_sig in seen_titles:
+            continue
+        seen_titles.add(content_sig)
+        
+        entries.append(f"[{i}] URL: {url}\nClassification: {cat} | Severity: {sev}\nEvidence: {evidence}\nContent Preview: {display_content}")
     
     if not entries:
         return "No valid content to summarize."
@@ -413,66 +470,109 @@ def generate_summary(query: str, scraped_data: dict, classifications: dict, rege
     threat_matrix = "Threat Distribution: " + ", ".join(f"{k}: {v}" for k, v in cat_counts.items())
     severity_matrix = "Severity Distribution: " + ", ".join(f"{k}: {v}" for k, v in sev_counts.items())
     
-    # format regex IOCs if provided
+    # format threat actor contacts — enriched format with context
+    contacts_block = ""
+    if actor_contacts:
+        contact_lines = ["Threat Actor Contacts (regex-extracted from pages):"]
+        for url, contacts in actor_contacts.items():
+            for contact_type, items in contacts.items():
+                for item in (items[:3] if isinstance(items, list) else [items]):
+                    if isinstance(item, dict):
+                        val = item.get("value", str(item))
+                        ctx = item.get("context", "")
+                        ctx_short = ctx[:80] if ctx else ""
+                        contact_lines.append(f"  {contact_type}: {val}")
+                        if ctx_short:
+                            contact_lines.append(f"    Context: {ctx_short}")
+                    else:
+                        contact_lines.append(f"  {contact_type}: {item}")
+        contacts_block = "\n".join(contact_lines[:40])
+    
+    # format regex IOCs — filter out catalog noise (types with >30 items from single page)
     ioc_block = ""
     if regex_iocs:
         ioc_lines = ["Pre-extracted IOCs (regex-verified):"]
         for url, iocs in regex_iocs.items():
             for ioc_type, values in iocs.items():
-                for val in values[:5]:  # cap at 5 per type per URL
+                # skip noisy types (likely catalog listings)
+                if len(values) > 30:
+                    ioc_lines.append(f"  {ioc_type}: [{len(values)} items from catalog — omitted]")
+                    continue
+                for val in values[:5]:
                     ioc_lines.append(f"  {ioc_type}: {val} [from: {url[:40]}]")
-        ioc_block = "\n".join(ioc_lines[:40])  # cap total lines
+        ioc_block = "\n".join(ioc_lines[:40])
     
-    prompt = f"""You are a Cyber Incident Response Analyst producing an intelligence brief from dark web OSINT data.
+    prompt = f"""You are a Cyber Threat Intelligence Analyst producing a dark web OSINT report.
+Your job is to ANALYZE the data — not just regurgitate it. Extract meaning, identify patterns, and assess threats.
 
-Investigation Query: {query}
+Investigation Query: "{query}"
 {threat_matrix}
 {severity_matrix}
-Total Sources Analyzed: {len(entries)}
+Total Unique Sources: {len(entries)}
+
+{contacts_block}
 
 {ioc_block}
 
-Scraped Intelligence Data:
+=== SCRAPED INTELLIGENCE DATA ===
 {content_block}
+=== END DATA ===
 
-Generate a structured INCIDENT RESPONSE BRIEF. KEEP ALL OUTPUT CONCISE — avoid long paragraphs.
+OUTPUT FORMAT — follow this EXACTLY:
 
-## INCIDENT RESPONSE BRIEF
+## DARK WEB INTELLIGENCE BRIEF
 
-### Investigation Query
-State what was investigated (1 line).
+### Query
+"{query}" — state scope in 1 line.
 
 ### Executive Summary
-2-3 sentence overview of key findings and threat level.
+2-3 sentences. What's the overall threat landscape for this query? Mention specific numbers (how many compromised accounts, prices, etc). State the threat level (LOW/MEDIUM/HIGH/CRITICAL).
 
-### Threat Matrix
-| Category | Count | Severity |
-Use classification data provided. Keep it compact.
-
-### Evidence Report
-For EACH classified page, show one row:
-| # | Category | Severity | URL (shortened) | Evidence Text |
-The evidence text is the exact snippet that triggered the alert. Use the "Evidence:" field from the data above.
-
-### IOCs (Indicators of Compromise)
-| IOC Type | Value | Source |
-Use the pre-extracted IOCs above. Keep "Source" to domain only (max 30 chars).
-If no IOCs, write "No IOCs identified."
-DO NOT put long text in any table cell. Max 60 chars per cell.
+### Threat Breakdown
+| Category | Count | Severity | Key Indicator |
+|---|---|---|---|
+Derive categories from the CONTENT (e.g., data_breach, market_listing, hacking_tutorial, credential_sale, forum_discussion).
+Do NOT just use "other" — analyze what each page actually contains.
+"Key Indicator" = the single most important phrase proving this categorization (max 30 chars).
 
 ### Key Findings
-3-5 bullet points. Each: what was found + why it matters (1-2 lines max per finding).
+3-5 numbered findings. For each:
+1. **[Finding Title]** — What was found specifically (names, numbers, prices).
+   - *Evidence*: Direct quote or data point from the scraped content (max 60 chars)
+   - *Impact*: Why this matters for the organization (1 line)
+
+### Threat Actors
+| Handle/Contact | Platform | Offering/Activity | Context |
+|---|---|---|---|
+Use the "Threat Actor Contacts" data above. Identify WHO is selling/offering WHAT.
+"Context" = what they were advertising near their contact info (max 40 chars).
+If no contacts found, write "No threat actor contacts identified in scraped pages."
+
+### Evidence Report
+| # | Type | URL (short) | Key Finding |
+|---|---|---|---|
+Show ONLY the 5-8 most important pages. Skip dead links, error pages, and duplicates.
+"Type" = what this page IS (e.g., "Hacking Forum", "Data Shop", "Tutorial Thread")
+"Key Finding" = the SPECIFIC threat indicator from this page (max 50 chars). NOT raw HTML or boilerplate.
+
+### IOCs (Indicators of Compromise)
+| Type | Value | Source |
+|---|---|---|
+Use the pre-extracted IOCs. Prioritize: emails, crypto wallets, credential dumps.
+SKIP domains from breach catalog listings (hundreds of .com domains = catalog noise, not IOCs).
+Max 10 rows. "Source" = domain only (max 25 chars).
 
 ### Recommended Actions
-3-5 bullet points of specific next steps.
+3-5 specific, actionable steps based on findings. Be concrete (e.g., "Monitor Telegram handle @xyz for updates" not "Monitor dark web").
 
-Rules:
-- Be evidence-based — only report what's in the data
-- Flag NSFW or illegal content without reproducing it
-- DO NOT put long text dumps in table cells — keep every cell under 60 characters
-- Keep total output under 3000 characters
+CRITICAL RULES:
+- NO raw HTML/boilerplate in any output (no "JavaScript is Disabled", no "Menu Log in Register")
+- Every table cell MUST be under 50 characters
+- Be analytical — identify PATTERNS across sources, don't just list what each page says
+- Total output under 3000 characters
+- If classification data shows all "other", you MUST re-derive proper categories from the content yourself
 
-OUTPUT:"""
+OUTPUT:
 
     result = call_llm(prompt, "summary")
     if result:

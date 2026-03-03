@@ -168,9 +168,27 @@ def _extract_sublinks(parent_url: str, soup) -> list:
         if parent_domain not in href:
             continue
         
-        # skip search, login, and nav links
-        skip_patterns = ['search', 'login', 'register', 'signup', 'logout',
-                        'javascript:', 'mailto:', '#', '?page=', '?sort=']
+        # skip search, login, nav, and generic forum pages with no intel value
+        skip_patterns = [
+            # auth/session
+            'login', 'register', 'signup', 'logout', 'sign-in', 'sign-up',
+            'forgot-password', 'reset-password', 'account/create',
+            # navigation / meta
+            'javascript:', 'mailto:', '#',
+            '?page=', '?sort=', '?order=', '?direction=',
+            # forum generic pages
+            '/whats-new', '/what-s-new', '/members', '/notable',
+            '/rules', '/help', '/faq', '/contact', '/about',
+            '/terms', '/privacy', '/tos', '/guidelines',
+            '/staff', '/moderators', '/admin',
+            '/install', '/upgrade',
+            '/latest', '/categories', '/tags',
+            '/search', '/find-threads',
+            # social / share
+            '/share', '/tweet', '/like',
+            # static assets
+            '.css', '.js', '.png', '.jpg', '.gif', '.svg', '.ico',
+        ]
         if any(p in href.lower() for p in skip_patterns):
             continue
         

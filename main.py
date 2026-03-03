@@ -3,6 +3,7 @@ import time
 import argparse
 from search import search_dark_web, save_results, get_urls_from_results, SEARCH_ENGINES
 from scrape import load_urls, scrape_all, save_scraped_data
+from ioc_extractor import extract_iocs_from_scraped, extract_contacts_from_scraped, format_iocs_summary, format_contacts_summary
 
 
 def get_int_input(prompt: str, default: int, min_val: int = 1, max_val: int = None) -> int:
@@ -191,15 +192,19 @@ def main():
     dead_links = sum(1 for v in scraped_data.values() if "Dead link" in v)
     
     # ==========================================
-    # STEP 4.5: IOC AUTO-EXTRACTION (always runs)
+    # STEP 4.5: IOC + CONTACT AUTO-EXTRACTION
     # ==========================================
-    from ioc_extractor import extract_iocs_from_scraped, format_iocs_summary
     print("\n" + "-" * 50)
-    print("IOC AUTO-EXTRACTION")
+    print("IOC & CONTACT AUTO-EXTRACTION")
     print("-" * 50)
     all_iocs = extract_iocs_from_scraped(scraped_data)
     ioc_count = sum(len(v) for iocs in all_iocs.values() for v in iocs.values())
     print(f"[+] Extracted {ioc_count} IOCs from {len(all_iocs)} pages")
+    
+    # extract threat actor contacts
+    all_contacts = extract_contacts_from_scraped(scraped_data)
+    contact_count = sum(len(v) for contacts in all_contacts.values() for v in contacts.values())
+    print(f"[+] Extracted {contact_count} threat actor contacts from {len(all_contacts)} pages")
     
     # save IOCs
     if all_iocs:
@@ -208,6 +213,14 @@ def main():
         with open("output/iocs.txt", "w", encoding="utf-8") as f:
             f.write(ioc_text)
         print(f"[+] IOCs saved to output/iocs.txt")
+    
+    # save contacts
+    if all_contacts:
+        contacts_text = format_contacts_summary(all_contacts)
+        os.makedirs("output", exist_ok=True)
+        with open("output/contacts.txt", "w", encoding="utf-8") as f:
+            f.write(contacts_text)
+        print(f"[+] Contacts saved to output/contacts.txt")
     
     file_analysis = {}
     file_verdicts = {}
@@ -304,7 +317,7 @@ def main():
         
         from ai_engine import generate_summary
         print("[*] Generating incident response brief...")
-        summary = generate_summary(query, scraped_data, classifications, regex_iocs=all_iocs)
+        summary = generate_summary(query, scraped_data, classifications, regex_iocs=all_iocs, actor_contacts=all_contacts)
         save_summary(summary)
     
     # ==========================================
@@ -328,12 +341,13 @@ def main():
     print(f"  - Dead Links Skipped: {dead_links}")
     print(f"  - URLs Scraped: {success}/{len(urls_to_scrape)}")
     print(f"  - IOCs Extracted: {ioc_count}")
+    print(f"  - Actor Contacts: {contact_count}")
     if file_analysis:
         confirmed = sum(1 for v in file_verdicts.values() if v.get('verdict') == 'confirmed_threat')
         print(f"  - Files Analyzed: {len(file_analysis)}")
         print(f"  - Confirmed Threats: {confirmed}")
     print(f"  - Output:")
-    print(f"      results.txt, scraped_data.txt, iocs.txt")
+    print(f"      results.txt, scraped_data.txt, iocs.txt, contacts.txt")
     if file_analysis:
         print(f"      file_analysis.txt")
     if use_ai and success > 0:
