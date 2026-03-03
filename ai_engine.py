@@ -572,7 +572,7 @@ CRITICAL RULES:
 - Total output under 3000 characters
 - If classification data shows all "other", you MUST re-derive proper categories from the content yourself
 
-OUTPUT:
+OUTPUT:"""
 
     result = call_llm(prompt, "summary")
     if result:
