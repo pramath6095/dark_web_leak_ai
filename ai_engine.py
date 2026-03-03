@@ -24,6 +24,15 @@ GEMINI_MODEL = "gemini-2.5-flash"
 GEMINI_MAX_RETRIES = 3
 GEMINI_RETRY_DELAYS = [2, 5, 10]
 
+# per-stage output token caps — generous but not wasteful
+STAGE_MAX_TOKENS = {
+    "refine":        512,
+    "filter":        512,
+    "classify":      2048,
+    "summary":       4096,
+    "file_analysis": 2048,
+}
+
 
 def _get_gemini_key(stage: str) -> str:
     """get the api key for a specific stage, falling back to the general key"""
@@ -56,15 +65,16 @@ def _get_ollama_model() -> str:
     return None
 
 
-def _call_gemini(prompt: str, api_key: str) -> str:
+def _call_gemini(prompt: str, api_key: str, stage: str = "summary") -> str:
     """call gemini api with retry logic for rate limits"""
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={api_key}"
     
+    max_tokens = STAGE_MAX_TOKENS.get(stage, 4096)
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {
             "temperature": 0.3,
-            "maxOutputTokens": 4096,
+            "maxOutputTokens": max_tokens,
         }
     }
     
@@ -130,7 +140,7 @@ def call_llm(prompt: str, stage: str) -> str:
     gemini_key = _get_gemini_key(stage)
     if gemini_key:
         try:
-            return _call_gemini(prompt, gemini_key)
+            return _call_gemini(prompt, gemini_key, stage=stage)
         except Exception:
             print(f"  [!] Gemini failed for stage '{stage}', trying fallback...")
     
@@ -158,36 +168,17 @@ def refine_query(query: str) -> list:
     strips company names and specifics — those are searched separately via original query.
     returns list of 3 keyword strings.
     """
-    prompt = f"""You are a Dark Web Query Specialist focused on data leak investigations.
-
-Your task: generate exactly 3 different generic dark web search keywords from the user's input.
+    prompt = f"""Dark web query specialist. Generate exactly 3 generic dark web search keywords from the user's input.
 
 Rules:
-1. Output ONLY 3 keywords, one per line, nothing else — no numbering, no explanation, no quotes
-2. Each keyword should be 2-4 words maximum
-3. Use dark web leak terminology: breach, dump, leak, cred, paste, combo, database, exposed, stolen, hack, fullz, stealer
-4. REMOVE all company names, person names, and specific identifiers — keep only generic threat terms
-5. Each keyword should target a different angle of the same threat
-6. Focus on what would appear in dark web forum titles and paste sites
+1. Output ONLY 3 keywords, one per line — no numbering, no explanation, no quotes, 2-4 words each
+2. Use dark web terminology: breach, dump, leak, cred, paste, combo, database, exposed, stolen, hack, fullz, stealer
+3. REMOVE all company/person names — keep only generic threat terms. Each keyword targets a different angle.
 
-Examples:
-Input: "Company ABC email data leak"
-Output:
+Example — Input: "Company ABC email data leak" → Output:
 email leak dump
 data breach database
 credentials combo list
-
-Input: "stolen credit cards from Bank XYZ"
-Output:
-credit card fullz
-banking credentials dump
-financial data breach
-
-Input: "John Smith account hacked"
-Output:
-account credentials leak
-hacked login dump
-stolen account combo
 
 User input: {query}"""
 
@@ -239,21 +230,15 @@ def filter_results(query: str, results: list) -> list:
     
     results_block = "\n".join(results_text)
     
-    prompt = f"""You are an OSINT Relevance Analyst specializing in dark web leak investigations.
+    prompt = f"""OSINT relevance analyst. From {len(results)} dark web search results, select the top 20 most likely to contain actual leaked data, credentials, or threat intelligence.
 
-You are given a search query and {len(results)} search results from dark web engines. Select the top 20 results most likely to contain actual leaked data, credentials, or threat intelligence relevant to the query.
+Query: {query}
 
-Search Query: {query}
-
-Search Results:
+Results:
 {results_block}
 
-Rules:
-1. Output ONLY the indices of the top 20 most relevant results as a comma-separated list
-2. Prioritize results that suggest actual data leaks, credential dumps, paste sites, or forum posts with breach data
-3. Deprioritize results that look like search engine pages, error pages, or generic marketplaces
-4. Order from most relevant to least relevant
-5. Output nothing except the comma-separated numbers
+Prioritize actual data leaks, credential dumps, paste sites, forum breach posts. Deprioritize search/error pages and generic marketplaces.
+Output ONLY comma-separated indices of the top 20, most relevant first. Nothing else.
 
 Output:"""
 
@@ -349,29 +334,15 @@ def classify_threats(query: str, scraped_data: dict) -> dict:
             for i, (url, content) in enumerate(batch)
         )
         
-        prompt = f"""You are a Threat Classification Engine for dark web intelligence analysis.
+        prompt = f"""Threat classification engine. Classify each page and extract the KEY PHRASE (max 50 chars) that is the actual threat indicator.
 
-Classify each scraped dark web page below. For each, extract the KEY PHRASE (max 50 chars) that is the actual threat indicator — not boilerplate or navigation text.
+Context: {query}
 
-Search Context: {query}
-
-Scraped Pages:
+Pages:
 {content_block}
 
-Categories (pick one per page):
-- data_breach: leaked databases, credential dumps, exposed records
-- credentials: combo lists, login credentials, passwords, email:pass
-- malware: malware samples, ransomware, stealers, RATs, exploits
-- market_listing: items for sale (cards, accounts, services, hacking)
-- forum_post: discussion threads, tutorials, announcements
-- paste: paste sites with raw data dumps
-- other: doesn't fit above categories
-
-Severity:
-- critical: active large-scale breach, fresh credentials, zero-day
-- high: confirmed leaked data, working exploits, significant exposure
-- medium: older data, partial leaks, discussion of threats
-- low: generic content, tangential relevance, no actionable data
+Categories: data_breach (leaked DBs, credential dumps, exposed records) | credentials (combo lists, email:pass) | malware (samples, ransomware, stealers, RATs, exploits) | market_listing (cards, accounts, services for sale) | forum_post (discussions, tutorials) | paste (raw data dumps) | other
+Severity: critical (active large-scale breach, fresh creds, zero-day) | high (confirmed leaked data, working exploits) | medium (older data, partial leaks) | low (generic, tangential)
 
 Output ONLY valid JSON array, no markdown, no explanation:
 [{{"url": "...", "category": "...", "severity": "...", "reason": "short reason max 30 chars", "evidence": "key threat phrase from page max 50 chars"}}]
@@ -486,7 +457,7 @@ def generate_summary(query: str, scraped_data: dict, classifications: dict, rege
                             contact_lines.append(f"    Context: {ctx_short}")
                     else:
                         contact_lines.append(f"  {contact_type}: {item}")
-        contacts_block = "\n".join(contact_lines[:40])
+        contacts_block = "\n".join(contact_lines[:25])
     
     # format regex IOCs — filter out catalog noise (types with >30 items from single page)
     ioc_block = ""
@@ -500,10 +471,9 @@ def generate_summary(query: str, scraped_data: dict, classifications: dict, rege
                     continue
                 for val in values[:5]:
                     ioc_lines.append(f"  {ioc_type}: {val} [from: {url[:40]}]")
-        ioc_block = "\n".join(ioc_lines[:40])
+        ioc_block = "\n".join(ioc_lines[:25])
     
-    prompt = f"""You are a Cyber Threat Intelligence Analyst producing a dark web OSINT report.
-Your job is to ANALYZE the data — not just regurgitate it. Extract meaning, identify patterns, and assess threats.
+    prompt = f"""Cyber Threat Intelligence Analyst. Produce a dark web OSINT report. ANALYZE the data — extract meaning, identify patterns, assess threats.
 
 Investigation Query: "{query}"
 {threat_matrix}
@@ -634,33 +604,21 @@ def verify_threat_files(query: str, file_analysis: dict) -> dict:
     
     content_block = '\n\n---\n\n'.join(entries)
     
-    prompt = f"""You are a Threat Verification Analyst examining file headers and metadata from dark web sources.
+    prompt = f"""Threat verification analyst. Examine file headers and metadata from dark web sources. You see ONLY the first 4KB header (not full content) plus torrent metadata.
 
-Investigation Context: {query}
+Context: {query}
 
-For each file below, determine whether it represents a REAL data leak/threat or is fake/benign.
-You are seeing ONLY the first 4KB header of each file (not the full content), plus torrent metadata where available.
-
-Files to Analyze:
+Files:
 {content_block}
 
-For each file, classify:
-- verdict: "confirmed_threat" (clearly real leaked data), "likely_fake" (honeypot, fake, or lure), "inconclusive" (can't determine from header alone), "benign" (legitimate/non-threatening content)
-- confidence: "high", "medium", or "low"
+Classify each file:
+- verdict: "confirmed_threat" (clearly real leaked data) | "likely_fake" (honeypot/lure) | "inconclusive" (can't determine from header) | "benign" (non-threatening)
+- confidence: "high" | "medium" | "low"
 - reason: brief explanation (max 100 chars)
-- data_type: what kind of data this appears to be (e.g., "credential dump", "database export", "financial records", "personal data", "source code", "unknown")
+- data_type: e.g. "credential dump", "database export", "financial records", "personal data", "source code", "unknown"
 
-Indicators of REAL threats:
-- Structured data patterns (email:password, CSV with PII columns, SQL table structures)
-- Database schema references, table names with user/customer/account data
-- Large file listings in torrents with data-suggestive names
-- File naming conventions common in actual breaches
-
-Indicators of FAKE/honeypot:
-- Too-perfect formatting, obviously generated data
-- Small files claiming to be massive dumps
-- Known honeypot patterns
-- Generic/template content
+REAL threat indicators: structured data patterns (email:password, CSV with PII, SQL schemas), DB table names with user/customer/account data, large torrent file listings with data-suggestive names, breach-typical naming.
+FAKE/honeypot indicators: too-perfect formatting, obviously generated data, small files claiming massive dumps, known honeypot patterns, generic/template content.
 
 Output ONLY valid JSON array, no markdown, no explanation:
 [{{"url": "...", "verdict": "...", "confidence": "...", "reason": "...", "data_type": "..."}}]
