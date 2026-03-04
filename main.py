@@ -47,8 +47,8 @@ Examples:
                         help="Skip all AI stages (search + scrape only)")
     parser.add_argument("--no-download", action="store_true",
                         help="Skip file header download and analysis")
-    parser.add_argument("-d", "--depth", type=int, default=1, choices=[1, 2],
-                        help="Scrape depth: 1=landing page, 2=follow sublinks (default: 1)")
+    parser.add_argument("-d", "--depth", type=int, default=2, choices=[1, 2],
+                        help="Scrape depth: 1=landing page only, 2=follow up to 5 sublinks (default: 2)")
     parser.add_argument("-p", "--pages", type=int, default=1, metavar="N",
                         help="Max pages to follow per URL via pagination (default: 1, max: 10)")
     parser.add_argument("--check-engines", action="store_true",
@@ -112,7 +112,7 @@ def main():
     if args.limit is not None:
         scrape_limit = args.limit
     else:
-        scrape_limit = get_int_input("How many URLs to scrape?", default=10)
+        scrape_limit = get_int_input("How many URLs to scrape?", default=20)
     
     print("\n" + "-" * 50)
     print(f"   Engines: {num_engines}/{total_engines} | Threads: {args.threads} | Scrape: {scrape_limit}")
