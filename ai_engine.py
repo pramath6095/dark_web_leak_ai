@@ -27,10 +27,11 @@ GEMINI_RETRY_DELAYS = [2, 5, 10]
 # per-stage output token caps — generous but not wasteful
 STAGE_MAX_TOKENS = {
     "refine":        512,
-    "filter":        512,
+    "filter":        1024,
     "classify":      3072,
     "summary":       4096,
     "file_analysis": 3072,
+    "company_check": 3072,
 }
 
 # stages that output JSON — use response_mime_type for reliable parsing
@@ -293,15 +294,15 @@ User input: {query}"""
 # STAGE 2: RESULT FILTERING
 # ============================================================
 
-def filter_results(query: str, results: list) -> list:
+def filter_results(query: str, results: list, limit: int = 20) -> list:
     """
-    stage 2: use llm to pick the top 20 most relevant search results.
+    stage 2: use llm to pick the top `limit` most relevant search results.
     results format: list of dicts with {url, title}
     """
     if not results:
         return []
     
-    if len(results) <= 20:
+    if len(results) <= limit:
         return results
     
     # build numbered list for llm
@@ -317,7 +318,7 @@ def filter_results(query: str, results: list) -> list:
     
     results_block = "\n".join(results_text)
     
-    prompt = f"""OSINT relevance analyst. From {len(results)} dark web search results, select the top 20 most likely to contain actual leaked data, credentials, or threat intelligence.
+    prompt = f"""OSINT relevance analyst. From {len(results)} dark web search results, select the top {limit} most likely to contain actual leaked data, credentials, or threat intelligence.
 
 Query: {query}
 
@@ -325,7 +326,7 @@ Results:
 {results_block}
 
 Prioritize actual data leaks, credential dumps, paste sites, forum breach posts. Deprioritize search/error pages and generic marketplaces.
-Output ONLY comma-separated indices of the top 20, most relevant first. Nothing else.
+Output ONLY comma-separated indices of the top {limit}, most relevant first. Nothing else.
 
 Output:"""
 
@@ -351,12 +352,12 @@ Output:"""
                 unique_indices.append(idx)
         
         if unique_indices:
-            filtered = [results[i - 1] for i in unique_indices[:20]]
+            filtered = [results[i - 1] for i in unique_indices[:limit]]
             return filtered
     
-    # fallback: return first 20
-    print("  [!] Could not parse filter response. Using first 20 results.")
-    return results[:20]
+    # fallback: return first limit results
+    print("  [!] Could not parse filter response. Using first results.")
+    return results[:limit]
 
 
 # ============================================================

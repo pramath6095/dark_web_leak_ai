@@ -182,15 +182,15 @@ def main():
     # ==========================================
     # STEP 3: AI RESULT FILTERING (if enabled)
     # ==========================================
-    if use_ai and len(search_results) > 20:
+    if use_ai and len(search_results) > scrape_limit:
         step_num = 3
         print("\n" + "-" * 50)
         print(f"STEP {step_num}: AI RESULT FILTERING")
         print("-" * 50)
         
         from ai_engine import filter_results
-        print(f"[*] Filtering {len(search_results)} results...")
-        search_results = filter_results(query, search_results)
+        print(f"[*] Filtering {len(search_results)} results down to {scrape_limit}...")
+        search_results = filter_results(query, search_results, limit=scrape_limit)
         print(f"[+] Selected top {len(search_results)} relevant results")
     
     # extract plain urls for scraper
