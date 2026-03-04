@@ -247,6 +247,7 @@ def main():
     
     file_analysis = {}
     file_verdicts = {}
+    company_verdicts = {}
     
     if use_ai and success > 0:
         # ==========================================
@@ -332,6 +333,50 @@ def main():
                 traceback.print_exc()
         
         # ==========================================
+        # STEP 5.9: COMPANY RELEVANCE VERIFICATION
+        # ==========================================
+        company_verdicts = {}
+        if classifications and scraped_data:
+            print("\n" + "-" * 50)
+            print("STEP 5.9: COMPANY/TARGET VERIFICATION")
+            print("-" * 50)
+            
+            from ai_engine import verify_company_relevance
+            print(f"[*] Verifying relevance to target: \"{query}\"...")
+            company_verdicts = verify_company_relevance(query, scraped_data, classifications)
+            
+            if company_verdicts:
+                rel_counts = {}
+                for v in company_verdicts.values():
+                    r = v.get('relevance', 'generic')
+                    rel_counts[r] = rel_counts.get(r, 0) + 1
+                
+                print(f"[+] Target relevance breakdown:")
+                for r, count in sorted(rel_counts.items(), key=lambda x: -x[1]):
+                    label = {
+                        'confirmed': 'CONFIRMED (target-specific)',
+                        'likely': 'LIKELY (probable match)',
+                        'generic': 'GENERIC (cannot confirm)',
+                        'unrelated': 'UNRELATED',
+                    }.get(r, r)
+                    print(f"    {label}: {count}")
+                
+                # save company verification report
+                os.makedirs("output", exist_ok=True)
+                with open("output/company_verification.txt", "w", encoding="utf-8") as f:
+                    f.write("=" * 60 + "\n")
+                    f.write(f"COMPANY/TARGET VERIFICATION REPORT\n")
+                    f.write(f"Target: \"{query}\"\n")
+                    f.write("=" * 60 + "\n\n")
+                    for url, v in company_verdicts.items():
+                        f.write(f"{'─' * 60}\n")
+                        f.write(f"URL: {url[:80]}\n")
+                        f.write(f"  Relevance: {v['relevance'].upper()}\n")
+                        f.write(f"  Confidence: {v['confidence']}\n")
+                        f.write(f"  Reasoning: {v['reasoning']}\n\n")
+                print(f"[+] Saved to output/company_verification.txt")
+        
+        # ==========================================
         # STEP 6: AI INTELLIGENCE SUMMARY
         # ==========================================
         print("\n" + "-" * 50)
@@ -371,10 +416,17 @@ def main():
         confirmed = sum(1 for v in file_verdicts.values() if v.get('verdict') == 'confirmed_threat')
         print(f"  - Files Analyzed: {len(file_analysis)}")
         print(f"  - Confirmed Threats: {confirmed}")
+    if company_verdicts:
+        target_specific = sum(1 for v in company_verdicts.values() if v.get('relevance') in ('confirmed', 'likely'))
+        generic = sum(1 for v in company_verdicts.values() if v.get('relevance') == 'generic')
+        print(f"  - Target-Specific: {target_specific}")
+        print(f"  - Generic/Unattributed: {generic}")
     print(f"  - Output:")
     print(f"      results.txt, scraped_data.txt, iocs.txt, contacts.txt")
     if file_analysis:
         print(f"      file_analysis.txt")
+    if company_verdicts:
+        print(f"      company_verification.txt")
     if use_ai and success > 0:
         print(f"      summary.txt")
     print("=" * 50 + "\n")

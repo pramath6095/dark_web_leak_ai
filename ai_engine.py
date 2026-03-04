@@ -458,6 +458,93 @@ JSON:"""
     
     return all_classified
 
+# ============================================================
+# STAGE 3.5: COMPANY RELEVANCE VERIFICATION
+# ============================================================
+
+def verify_company_relevance(query: str, scraped_data: dict, classifications: dict) -> dict:
+    """
+    verify whether each classified threat is specific to the target company/topic,
+    or generic dark web data that cannot be attributed.
+    returns dict: {url: {relevance, confidence, reasoning}}
+    """
+    if not classifications or not scraped_data:
+        return {}
+
+    # build compact entries for the prompt
+    entries = []
+    url_list = []
+    for url, cls in classifications.items():
+        content = scraped_data.get(url, '')
+        if content.startswith("[ERROR"):
+            continue
+
+        # use first 500 chars of content for context
+        preview = content[:500].replace('\n', ' ').strip()
+        cat = cls.get('category', 'unknown')
+        sev = cls.get('severity', 'unknown')
+        entries.append(f"URL: {url}\nCategory: {cat} | Severity: {sev}\nContent: {preview}")
+        url_list.append(url)
+
+    if not entries:
+        return {}
+
+    content_block = "\n---\n".join(entries)
+
+    prompt = f"""Company/Target verification analyst. Determine whether each threat below is SPECIFIC to the search target or just generic dark web data.
+
+Search target: "{query}"
+
+For each URL, classify relevance as:
+- "confirmed": content explicitly mentions the target by name with specific data (e.g. company employee emails, named database, specific breach details)
+- "likely": content strongly implies connection to target (e.g. matching industry/region, related services mentioned)
+- "generic": content is general dark web data that CANNOT be confirmed as related to the target (e.g. generic credential lists, random databases, unrelated marketplace listings)
+- "unrelated": content has nothing to do with the target
+
+Respond with ONLY valid JSON — an object where each key is the URL and value has:
+- "relevance": one of confirmed/likely/generic/unrelated
+- "confidence": high/medium/low
+- "reasoning": 1 sentence explaining why
+
+=== DATA ===
+{content_block}
+=== END DATA ==="""
+
+    result = _call_llm_json_retry(prompt, "classify")
+
+    verdicts = {}
+    if result:
+        try:
+            parsed = json.loads(result) if isinstance(result, str) else result
+            if isinstance(parsed, dict):
+                for url in url_list:
+                    # try exact match first, then partial
+                    entry = parsed.get(url)
+                    if not entry:
+                        for k, v in parsed.items():
+                            if k in url or url in k:
+                                entry = v
+                                break
+                    if entry and isinstance(entry, dict):
+                        verdicts[url] = {
+                            'relevance': entry.get('relevance', 'generic'),
+                            'confidence': entry.get('confidence', 'low'),
+                            'reasoning': entry.get('reasoning', ''),
+                        }
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    # fallback for any URLs not covered
+    for url in url_list:
+        if url not in verdicts:
+            verdicts[url] = {
+                'relevance': 'generic',
+                'confidence': 'low',
+                'reasoning': 'verification unavailable',
+            }
+
+    return verdicts
+
 
 # ============================================================
 # STAGE 4: INTELLIGENCE SUMMARY
