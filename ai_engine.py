@@ -250,27 +250,14 @@ def refine_query(query: str) -> list:
     stage 1: generate threat-intelligence-optimized search strings for dark web.
     returns list of keyword strings targeting real threat data.
     """
-    prompt = f"""Dark web threat intelligence analyst. Generate exactly 5 search strings to find REAL threats related to the user's input on dark web search engines (.onion).
-
+    prompt = f"""You are a Dark Web Threat Intelligence Analyst. Generate search queries for dark web search engines related to the provided input.
 Rules:
-1. Output ONLY 5 search strings, one per line. No numbering, no explanation, no quotes.
-2. Each 2-5 words. KEEP the target name in every query.
-3. Each query MUST target a DIFFERENT threat surface:
-   - Data breach / leak exposure (breach, leak, exposed, compromised, hacked)
-   - Ransomware / extortion (ransomware, ransom, lockbit, alphv, leak blog)
-   - Credential exposure (credentials, login, combolist, stealer logs, infostealer)
-   - Forum/marketplace chatter (selling, for sale, access, exploit, vulnerability)
-   - Paste / dump sites (paste, dump, database, records, dox)
-4. Think like a threat actor — use terms they actually use on forums and paste sites.
-
-Example - Input: "Accenture" - Output:
-Accenture data breach leaked
-Accenture ransomware leak blog
-Accenture credentials stealer logs
-Accenture access selling forum
-Accenture database dump paste
-
-User input: {query}"""
+- Generate exactly 5 queries, one per line.
+- Each query must be 2–5 words and include the original target name.
+- Each query must target a different threat surface: breach/leak, ransomware/extortion, credential exposure, forum/market activity, paste/database dump.
+- Use realistic dark web terminology (breach, leak, ransomware, credentials, combolist, stealer logs, selling, access, dump, paste).
+No logical operators, numbering, quotes, or explanations.
+INPUT: {query}"""
 
     result = call_llm(prompt, "refine")
     if result:
@@ -318,16 +305,15 @@ def filter_results(query: str, results: list, limit: int = 20) -> list:
     
     results_block = "\n".join(results_text)
     
-    prompt = f"""OSINT relevance analyst. From {len(results)} dark web search results, select the top {limit} most likely to contain actual leaked data, credentials, or threat intelligence.
-
+    prompt = f"""You are a Cybercrime Threat Intelligence Expert. You are given a dark web search query and a list of search results. From the {len(results)} results, select the top {limit} results most likely to contain real leaked data, credentials, or breach intelligence.
 Query: {query}
-
 Results:
 {results_block}
-
-Prioritize actual data leaks, credential dumps, paste sites, forum breach posts. Deprioritize search/error pages and generic marketplaces.
-Output ONLY comma-separated indices of the top {limit}, most relevant first. Nothing else.
-
+Rules:
+1. Prioritize results related to data breaches, credential dumps, paste sites, and forum breach posts.
+2. Deprioritize search pages, error pages, and generic marketplaces.
+3. Output ONLY the top {limit} most relevant result indices as a comma-separated list.
+4. Do not output anything else.
 Output:"""
 
     result = call_llm(prompt, "filter")
@@ -646,7 +632,7 @@ def generate_summary(query: str, scraped_data: dict, classifications: dict, rege
                     ioc_lines.append(f"  {ioc_type}: {val} [from: {url[:40]}]")
         ioc_block = "\n".join(ioc_lines[:25])
     
-    prompt = f"""Cyber Threat Intelligence Analyst. Produce a dark web OSINT report. ANALYZE the data — extract meaning, identify patterns, assess threats.
+    prompt = f"""You are a senior Cyber Threat Intelligence Analyst. Produce a comprehensive dark web OSINT report based on the intelligence data below. ANALYZE the data thoroughly — extract meaning, identify patterns, assess real threats, and provide actionable intelligence.
 
 Investigation Query: "{query}"
 {threat_matrix}
@@ -661,59 +647,71 @@ Total Unique Sources: {len(entries)}
 {content_block}
 === END DATA ===
 
+You MUST produce ALL of the following sections. Do NOT skip any section. Fill each with real data from the scraped content above.
+
 OUTPUT FORMAT — follow this EXACTLY:
 
 ## DARK WEB INTELLIGENCE BRIEF
 
 ### Query
-"{query}" — state scope in 1 line.
+"{query}" — state the investigation scope in 1 line.
 
 ### Executive Summary
-2-3 sentences. What's the overall threat landscape for this query? Mention specific numbers (how many compromised accounts, prices, etc). State the threat level (LOW/MEDIUM/HIGH/CRITICAL).
+3-5 sentences. Provide a thorough overview of the threat landscape for this query. Include specific numbers where available (compromised accounts, prices, number of vendors). Mention the most critical threats found. State the overall threat level: LOW / MEDIUM / HIGH / CRITICAL with justification.
 
 ### Threat Breakdown
 | Category | Count | Severity | Key Indicator |
 |---|---|---|---|
-Derive categories from the CONTENT (e.g., data_breach, market_listing, hacking_tutorial, credential_sale, forum_discussion).
-Do NOT just use "other" — analyze what each page actually contains.
-"Key Indicator" = the single most important phrase proving this categorization (max 30 chars).
+Derive categories from the actual CONTENT of each page (e.g., data_breach, market_listing, hacking_service, credential_sale, ransomware, forum_discussion, carding, exploit_sale).
+Do NOT just use "other" — analyze what each page actually contains and assign a specific category.
+"Key Indicator" = the single most important phrase proving this categorization (max 40 chars).
+Include ALL categories found — do not combine or omit.
 
 ### Key Findings
-3-5 numbered findings. For each:
-1. **[Finding Title]** — What was found specifically (names, numbers, prices).
-   - *Evidence*: Direct quote or data point from the scraped content (max 60 chars)
-   - *Impact*: Why this matters for the organization (1 line)
+4-6 numbered findings ordered by severity. For each finding:
+1. **[Finding Title]** — Describe what was found with specifics: names, numbers, prices, data types, volumes.
+   - *Evidence*: Direct quote or data point extracted from the scraped content (max 80 chars)
+   - *Source*: Which URL or page type this was found on (1 line)
+   - *Impact*: Why this matters for the organization and what risk it poses (1-2 lines)
 
 ### Threat Actors
 | Handle/Contact | Platform | Offering/Activity | Context |
 |---|---|---|---|
 Use the "Threat Actor Contacts" data above. Identify WHO is selling/offering WHAT.
-"Context" = what they were advertising near their contact info (max 40 chars).
+"Context" = what they were advertising near their contact info (max 50 chars).
+Include ALL identified threat actors — do not truncate this table.
 If no contacts found, write "No threat actor contacts identified in scraped pages."
 
 ### Evidence Report
-| # | Type | URL (short) | Key Finding |
-|---|---|---|---|
-Show ONLY the 5-8 most important pages. Skip dead links, error pages, and duplicates.
-"Type" = what this page IS (e.g., "Hacking Forum", "Data Shop", "Tutorial Thread")
-"Key Finding" = the SPECIFIC threat indicator from this page (max 50 chars). NOT raw HTML or boilerplate.
+| # | Type | URL (short) | Key Finding | Severity |
+|---|---|---|---|---|
+List the 6-10 most important pages. Skip dead links, error pages, and duplicates.
+"Type" = what this page IS (e.g., "Hacking Forum", "Data Shop", "Leak Blog", "Tutorial Thread", "Breach DB")
+"Key Finding" = the SPECIFIC threat indicator from this page (max 60 chars). NOT raw HTML.
+"Severity" = critical/high/medium/low
 
 ### IOCs (Indicators of Compromise)
-| Type | Value | Source |
-|---|---|---|
-Use the pre-extracted IOCs. Prioritize: emails, crypto wallets, credential dumps.
+| Type | Value | Source | Context |
+|---|---|---|---|
+Use the pre-extracted IOCs. Prioritize: emails, crypto wallets, credential dumps, onion URLs.
 SKIP domains from breach catalog listings (hundreds of .com domains = catalog noise, not IOCs).
-Max 10 rows. "Source" = domain only (max 25 chars).
+Max 15 rows. Include context for each IOC explaining its significance.
+"Source" = shortened source domain (max 25 chars).
 
 ### Recommended Actions
-3-5 specific, actionable steps based on findings. Be concrete (e.g., "Monitor Telegram handle @xyz for updates" not "Monitor dark web").
+4-6 specific, actionable steps based on the findings above. Be concrete and reference specific findings:
+- Reference specific threat actors, handles, or IOCs (e.g., "Monitor Telegram handle @xyz for updates")
+- Suggest specific defensive measures based on the threat types found
+- Prioritize actions by urgency
 
 CRITICAL RULES:
 - NO raw HTML/boilerplate in any output (no "JavaScript is Disabled", no "Menu Log in Register")
-- Every table cell MUST be under 50 characters
+- Every table cell MUST be under 60 characters
 - Be analytical — identify PATTERNS across sources, don't just list what each page says
-- Total output under 3000 characters
+- You MUST complete ALL sections above — do not stop early or skip sections
+- Aim for 4000-5000 characters total — be thorough but avoid padding or repetition
 - If classification data shows all "other", you MUST re-derive proper categories from the content yourself
+- Prefer specific data over generic statements — numbers, names, prices, dates are more valuable than vague descriptions
 
 OUTPUT:"""
 
