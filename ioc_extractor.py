@@ -429,7 +429,7 @@ def format_iocs_summary(all_iocs: dict) -> str:
             items = aggregated[ioc_type]
             lines.append(f"\n{label} ({len(items)} found):")
             for val, sources in sorted(items.items())[:20]:  # cap display at 20 per type
-                source_short = sources[0][:40] + "..." if len(sources[0]) > 40 else sources[0]
+                source_short = sources[0]
                 lines.append(f"  • {val}  [from: {source_short}]")
             if len(items) > 20:
                 lines.append(f"  ... and {len(items) - 20} more")
