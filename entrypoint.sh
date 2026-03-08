@@ -4,17 +4,22 @@
 echo "[*] Starting Tor service..."
 tor &
 
-# Wait for Tor to bootstrap
+# Wait for Tor to actually be ready (check SOCKS port)
 echo "[*] Waiting for Tor to connect..."
-sleep 10
+MAX_WAIT=60
+WAITED=0
 
-# Check if Tor is running
-if pgrep -x "tor" > /dev/null; then
-    echo "[+] Tor is running on port 9050"
-else
-    echo "[-] Failed to start Tor"
-    exit 1
-fi
+while ! (echo > /dev/tcp/127.0.0.1/9050) 2>/dev/null; do
+    if [ $WAITED -ge $MAX_WAIT ]; then
+        echo "[-] Tor failed to start after ${MAX_WAIT}s"
+        exit 1
+    fi
+    sleep 2
+    WAITED=$((WAITED + 2))
+    echo "[*] Waiting... (${WAITED}s)"
+done
+
+echo "[+] Tor is running on port 9050 (took ${WAITED}s)"
 
 # Run the main application with provided query or prompt for input
 if [ $# -gt 0 ]; then

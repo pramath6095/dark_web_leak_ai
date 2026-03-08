@@ -35,10 +35,22 @@ ENV/
 .vscode/
 *.swp
 *.swo
+.cursor/
 
 # Output files
 output/
 
-# Internal docs
+# Test files
+test_*.py
+
+# Docker
+.docker/
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Internal docs / dev notes
 overview.md
 robin/

@@ -1,0 +1,12 @@
+services:
+  aidarkleak:
+    build: .
+    container_name: aidarkleak
+    stdin_open: true
+    tty: true
+    env_file:
+      - .env
+    environment:
+      - TOR_PROXY_PORT=9050
+    volumes:
+      - ./output:/app/output

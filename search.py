@@ -88,7 +88,6 @@ SEARCH_ENGINES = [
     "http://juhanurmihxlp77nkq76byazcldy2hlmovfu2epvl5ankdibsot4csyd.onion/search/?q={query}",
     "http://3bbad7fauom4d6sgppalyqddsqbf5u5p56b5k5uk2zxsy3d6ey2jobad.onion/search?q={query}",
     "http://iy3544gmoeclh5de6gez2256v6pjh4omhpqdh2wpeeppjtvqmjhkfwad.onion/torgle/?query={query}",
-    "http://amnesia7u5odx5xbwtpnqk3edybgud5bmiagu75bnqx2crntw5kry7ad.onion/search?query={query}",
     "http://kaizerwfvp5gxu6cppibp7jhcqptavq3iqef66wbxenh6a2fklibdvid.onion/search?q={query}",
     "http://anima4ffe27xmakwnseih3ic2y7y3l6e7fucwk4oerdn4odf7k74tbid.onion/search?q={query}",
     "http://2fd6cemt4gmccflhm6imvdfvli3nf7zn6rfrwpsy7uhxrgbypvwf5fad.onion/search?query={query}",
@@ -101,7 +100,8 @@ SEARCH_ENGINES = [
     "http://tornetupfu7gcgidt33ftnungxzyfq2pygui5qdoyss34xbgx2qruzid.onion/search?q={query}",
     "http://torlbmqwtudkorme6prgfpmsnile7ug2zm4u3ejpcncxuhpu4k2j4kyd.onion/index.php?a=search&q={query}",
     "http://findtorroveq5wdnipkaojfpqulxnkhblymc7aramjzajcvpptd4rjqd.onion/search?q={query}",
-    "http://leaksndi6i6m2ji6ozulqe4imlrqn6wrgjlhxe25vremvr3aymm4aaid.onion/"
+    "http://leaksndi6i6m2ji6ozulqe4imlrqn6wrgjlhxe25vremvr3aymm4aaid.onion/?q={query}",
+    "http://amnesia7u5odx5xbwtpnqk3edybgud5bmiagu75bnqx2crntw5kry7ad.onion/search?query={query}",
 ]
 
 
@@ -132,10 +132,11 @@ async def fetch_from_engine(endpoint: str, query: str, stream_id: int) -> list:
                     for a in soup.find_all('a'):
                         try:
                             href = a.get('href', '')
+                            title = a.get_text(strip=True)[:100]
                             onion_links = re.findall(r'https?://[a-z0-9\.]+\.onion[^\s"\'<>]*', href)
                             for link in onion_links:
-                                if "search" not in link:
-                                    links.append(link)
+                                if "search" not in link and len(title) > 2:
+                                    links.append({"url": link, "title": title})
                         except:
                             continue
                     
@@ -173,40 +174,105 @@ async def search_dark_web_async(query: str, max_workers: int = 3, num_engines: i
     
     results = await asyncio.gather(*tasks, return_exceptions=True)
     
-    # flatten and deduplicate
-    all_urls = []
+    # flatten and deduplicate by url
+    all_results = []
     for result in results:
         if isinstance(result, list):
-            all_urls.extend(result)
+            all_results.extend(result)
     
     seen = set()
-    unique_urls = []
-    for url in all_urls:
-        clean_url = url.rstrip('/')
+    unique_results = []
+    for item in all_results:
+        clean_url = item["url"].rstrip('/')
         if clean_url not in seen:
             seen.add(clean_url)
-            unique_urls.append(clean_url)
+            unique_results.append({"url": clean_url, "title": item["title"]})
     
-    return unique_urls
+    return unique_results
 
 
 def search_dark_web(query: str, max_workers: int = 3, num_engines: int = None) -> list:
     return asyncio.run(search_dark_web_async(query, max_workers, num_engines))
 
 
-def save_results(urls: list, filename: str = "output/results.txt"):
+def save_results(results: list, filename: str = "output/results.txt"):
     os.makedirs("output", exist_ok=True)
     with open(filename, "w", encoding="utf-8") as f:
-        for url in urls:
-            f.write(url + "\n")
-    print(f"\n[+] Saved {len(urls)} URLs to {filename}")
+        for item in results:
+            if isinstance(item, dict):
+                f.write(f"{item['url']} | {item.get('title', 'Untitled')}\n")
+            else:
+                f.write(item + "\n")
+    print(f"\n[+] Saved {len(results)} results to {filename}")
+
+
+def get_urls_from_results(results: list) -> list:
+    """extract plain url list from search results for scraper compatibility"""
+    if not results:
+        return []
+    if isinstance(results[0], dict):
+        return [item["url"] for item in results]
+    return results
+
+
+async def check_engines_async(max_workers: int = 5) -> dict:
+    """health-check all search engines. returns dict of url -> {status, response_time_ms}"""
+    import time as _time
+    
+    print(f"\n[+] Checking {len(SEARCH_ENGINES)} search engines...")
+    print(f"[+] Using Tor proxy at {TOR_PROXY_HOST}:{TOR_PROXY_PORT}\n")
+    
+    semaphore = asyncio.Semaphore(max_workers)
+    results = {}
+    
+    async def check_one(engine, stream_id):
+        async with semaphore:
+            url = engine.format(query="test")
+            domain = engine.split('/')[2][:25]
+            connector = get_proxy_connector(stream_id)
+            timeout = ClientTimeout(total=20)
+            headers = get_browser_headers()
+            
+            start = _time.time()
+            try:
+                async with ClientSession(connector=connector, timeout=timeout) as session:
+                    async with session.get(url, headers=headers) as response:
+                        elapsed = int((_time.time() - start) * 1000)
+                        status = "alive" if response.status == 200 else f"http_{response.status}"
+                        results[engine] = {"status": status, "ms": elapsed, "domain": domain}
+                        icon = "+" if status == "alive" else "!"
+                        print(f"  [{icon}] {domain:<25} {status:<10} {elapsed}ms")
+            except asyncio.TimeoutError:
+                elapsed = int((_time.time() - start) * 1000)
+                results[engine] = {"status": "timeout", "ms": elapsed, "domain": domain}
+                print(f"  [x] {domain:<25} timeout    {elapsed}ms")
+            except Exception:
+                elapsed = int((_time.time() - start) * 1000)
+                results[engine] = {"status": "dead", "ms": elapsed, "domain": domain}
+                print(f"  [x] {domain:<25} dead       {elapsed}ms")
+    
+    tasks = [check_one(engine, i) for i, engine in enumerate(SEARCH_ENGINES)]
+    await asyncio.gather(*tasks)
+    
+    # summary
+    alive = sum(1 for r in results.values() if r["status"] == "alive")
+    print(f"\n[+] Results: {alive}/{len(SEARCH_ENGINES)} engines alive")
+    return results
+
+
+def check_engines(max_workers: int = 5) -> dict:
+    return asyncio.run(check_engines_async(max_workers))
 
 
 if __name__ == "__main__":
     query = input("Enter search query: ")
-    urls = search_dark_web(query)
-    if urls:
-        save_results(urls)
-        print(f"\n[+] Found {len(urls)} unique URLs")
+    results = search_dark_web(query)
+    if results:
+        save_results(results)
+        print(f"\n[+] Found {len(results)} unique results")
+        for i, item in enumerate(results[:5], 1):
+            print(f"  {i}. {item['title'][:50]} — {item['url'][:50]}")
+        if len(results) > 5:
+            print(f"  ... and {len(results) - 5} more")
     else:
         print("\n[-] No results found. Check if Tor is running.")
