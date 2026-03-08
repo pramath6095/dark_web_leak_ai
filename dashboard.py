@@ -118,7 +118,7 @@ def _run_pipeline(job_id: str, query: str, config: dict):
             _jobs[job_id]["finished"] = time.time()
             _jobs[job_id]["results_count"] = len(all_results)
             _jobs[job_id]["scraped_count"] = sum(1 for v in scraped_data.values() if not v.startswith("[ERROR"))
-            _jobs[job_id]["summary_preview"] = summary[:500] if summary else ""
+            _jobs[job_id]["summary_preview"] = summary if summary else ""
 
     except Exception as e:
         with _job_lock:
@@ -137,6 +137,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Dark Web Leak Monitor</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <style>
   :root {
     --bg: #080b12;
@@ -231,7 +232,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .job-stat .value { color: var(--text); font-size: 18px; font-weight: 700; margin-top: 2px; }
   .progress-step { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; }
   .progress-step.active { color: var(--accent); }
-  .summary-preview { background: var(--surface2); border: 1px solid var(--border); border-radius: 10px; padding: 16px; font-size: 13px; line-height: 1.7; color: #cbd5e1; white-space: pre-wrap; max-height: 220px; overflow-y: auto; font-family: var(--mono); margin-top: 12px; }
+  .summary-preview { background: var(--surface2); border: 1px solid var(--border); border-radius: 10px; padding: 16px; font-size: 13px; line-height: 1.7; color: #cbd5e1; white-space: normal; max-height: 350px; overflow-y: auto; overflow-x: auto; margin-top: 12px; }
 
   /* FILE CARDS */
   .files-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; }
@@ -299,6 +300,30 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .empty-state { text-align: center; padding: 40px; color: var(--muted); font-size: 14px; }
   .spinner { width: 36px; height: 36px; border: 3px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.7s linear infinite; margin: 0 auto 12px; }
   @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* MARKDOWN STYLES */
+  .markdown-body { font-size: 14px; line-height: 1.6; color: #cbd5e1; font-family: 'Inter', sans-serif; max-height: 60vh; overflow-y: auto; padding-right: 12px; }
+  .markdown-body::-webkit-scrollbar { width: 8px; height: 8px; }
+  .markdown-body::-webkit-scrollbar-track { background: rgba(0,0,0,0.1); border-radius: 4px; }
+  .markdown-body::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 4px; }
+  .markdown-body::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.25); }
+  .markdown-body h1, .markdown-body h2, .markdown-body h3, .markdown-body h4 { color: white; margin-top: 24px; margin-bottom: 12px; font-weight: 600; }
+  .markdown-body h1 { font-size: 22px; margin-top: 10px; }
+  .markdown-body h2 { font-size: 18px; border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+  .markdown-body h3 { font-size: 16px; }
+  .markdown-body p, .markdown-body ul, .markdown-body ol { margin-bottom: 16px; }
+  .markdown-body ul, .markdown-body ol { padding-left: 24px; }
+  .markdown-body li { margin-bottom: 4px; }
+  .markdown-body code { background: rgba(0,0,0,0.3); padding: 2px 6px; border-radius: 4px; font-family: var(--mono); font-size: 12.5px; }
+  .markdown-body pre { background: rgba(0,0,0,0.5); padding: 16px; border-radius: 8px; overflow-x: auto; margin-bottom: 16px; border: 1px solid var(--border); }
+  .markdown-body pre code { background: none; padding: 0; border: none; }
+  .markdown-body table { width: 100%; border-collapse: collapse; margin-bottom: 16px; display: block; overflow-x: auto; white-space: nowrap; }
+  .markdown-body th, .markdown-body td { border: 1px solid var(--border); padding: 10px 14px; text-align: left; }
+  .markdown-body th { background: rgba(255,255,255,0.05); color: white; font-weight: 600; }
+  .markdown-body tr:nth-child(even) { background: rgba(255,255,255,0.02); }
+  .markdown-body a { color: var(--accent); text-decoration: none; }
+  .markdown-body a:hover { text-decoration: underline; }
+  .markdown-body blockquote { border-left: 4px solid var(--accent); padding-left: 16px; color: var(--muted); margin-bottom: 16px; }
 </style>
 </head>
 <body>
@@ -436,7 +461,7 @@ function renderJobDone(s) {
       <div class="job-stat"><div class="label">URLs Found</div><div class="value">${s.results_count || 0}</div></div>
       <div class="job-stat"><div class="label">Pages Scraped</div><div class="value">${s.scraped_count || 0}</div></div>
     </div>
-    ${s.summary_preview ? `<div class="summary-preview">${escHtml(s.summary_preview)}…</div>` : ''}`;
+    ${s.summary_preview ? `<div class="summary-preview markdown-body">${typeof marked !== 'undefined' ? marked.parse(s.summary_preview) : escHtml(s.summary_preview)}</div>` : ''}`;
 }
 
 function renderJobError(err) {
@@ -520,22 +545,10 @@ function renderContent(name, cls, text) {
 }
 
 function renderSummary(text) {
-  // Split by double newline into paragraphs / sections
-  const sections = text.split(/\\n\\n+/);
-  let html = '';
-  for (const sec of sections) {
-    const trimmed = sec.trim();
-    if (!trimmed) continue;
-    // Section headers: lines starting with ===, ---, or ALL CAPS short line
-    if (/^[=-]{3,}/.test(trimmed) || /^[A-Z ]{4,40}$/.test(trimmed.split('\\n')[0])) {
-      html += `<div class="section-title">${escHtml(trimmed.split('\\n')[0])}</div>`;
-      const rest = trimmed.split('\\n').slice(1).join('\\n').trim();
-      if (rest) html += `<div class="plain-text" style="margin-bottom:16px">${escHtml(rest)}</div>`;
-    } else {
-      html += `<div class="plain-text" style="margin-bottom:12px">${escHtml(trimmed)}</div>`;
-    }
+  if (typeof marked !== 'undefined') {
+    return `<div class="markdown-body" style="background: var(--surface2); border: 1px solid var(--border); border-radius: 10px; padding: 24px; max-height: 60vh; overflow-y: auto;">${marked.parse(text)}</div>`;
   }
-  return html || `<div class="plain-text">${escHtml(text)}</div>`;
+  return `<div class="plain-text" style="white-space: pre-wrap; max-height: 60vh; overflow-y: auto;">${escHtml(text)}</div>`;
 }
 
 function renderIOCs(text) {
