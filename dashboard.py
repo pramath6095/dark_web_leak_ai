@@ -38,11 +38,17 @@ def _run_pipeline(job_id: str, query: str, config: dict):
         from ioc_extractor import extract_iocs_from_scraped, extract_contacts_from_scraped, format_iocs_summary, format_contacts_summary
 
         use_ai = config.get("use_ai", True)
+        ai_provider = config.get("ai_provider", "gemini")
         num_engines = config.get("num_engines", 17)
         scrape_limit = config.get("scrape_limit", 10)
         threads = config.get("threads", 3)
         depth = config.get("depth", 1)
         max_pages = config.get("max_pages", 1)
+
+        # set the AI provider for this job
+        if use_ai:
+            from ai_engine import set_provider
+            set_provider(ai_provider)
 
         with _job_lock:
             _jobs[job_id]["progress"] = "searching"
@@ -355,6 +361,21 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         <div><label>Pages / URL</label><input type="number" id="pages" value="1" min="1" max="10"></div>
         <div><label>AI Pipeline</label><select id="ai"><option value="1">Enabled</option><option value="0">Disabled</option></select></div>
       </div>
+      <div class="row">
+        <div>
+          <label>AI Provider</label>
+          <select id="provider">
+            <option value="gemini">Gemini (default)</option>
+            <option value="ollama">Ollama (Local)</option>
+            <option value="anthropic">Anthropic</option>
+            <option value="deepseek">DeepSeek</option>
+            <option value="groq">Groq</option>
+            <option value="mistral">Mistral</option>
+          </select>
+        </div>
+        <div></div>
+        <div></div>
+      </div>
       <button type="submit" id="run-btn" class="btn btn-primary">▶ Run Pipeline</button>
     </form>
   </div>
@@ -415,6 +436,7 @@ form.addEventListener('submit', async (e) => {
     depth:        parseInt(document.getElementById('depth').value),
     max_pages:    parseInt(document.getElementById('pages').value),
     use_ai:       document.getElementById('ai').value === '1',
+    ai_provider:  document.getElementById('provider').value,
   };
   const res  = await fetch('/run', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) });
   const data = await res.json();
@@ -658,6 +680,7 @@ def run_pipeline():
     job_id = f"job_{int(time.time())}_{os.getpid()}"
     config = {
         "use_ai":        data.get("use_ai", True),
+        "ai_provider":   data.get("ai_provider", "gemini"),
         "num_engines":   data.get("num_engines", 17),
         "scrape_limit":  data.get("scrape_limit", 10),
         "threads":       data.get("threads", 3),

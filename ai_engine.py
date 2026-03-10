@@ -9,22 +9,64 @@ import warnings
 warnings.filterwarnings("ignore")
 
 
-# per-stage gemini api keys with fallback
-STAGE_KEY_MAP = {
-    "refine":        os.getenv("GEMINI_KEY_REFINE"),
-    "filter":        os.getenv("GEMINI_KEY_FILTER"),
-    "classify":      os.getenv("GEMINI_KEY_CLASSIFY"),
-    "summary":       os.getenv("GEMINI_KEY_SUMMARY"),
-    "file_analysis": os.getenv("GEMINI_KEY_FILE_ANALYSIS"),
+# ============================================================
+# PROVIDER CONFIGURATION
+# ============================================================
+
+PROVIDERS = ["gemini", "anthropic", "deepseek", "groq", "mistral", "ollama"]
+STAGES = ["refine", "filter", "classify", "summary", "file_analysis"]
+
+# active provider — set from env or overridden by dashboard
+_active_provider = os.getenv("AI_PROVIDER", "gemini").strip().lower()
+
+# provider key env var prefixes
+_PROVIDER_PREFIX = {
+    "gemini":    "GEMINI",
+    "anthropic": "ANTHROPIC",
+    "deepseek":  "DEEPSEEK",
+    "groq":      "GROQ",
+    "mistral":   "MISTRAL",
 }
-GEMINI_FALLBACK_KEY = os.getenv("GEMINI_API_KEY")
+
+# provider model defaults
+PROVIDER_MODELS = {
+    "gemini":    os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
+    "anthropic": os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-20250514"),
+    "deepseek":  os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
+    "groq":      os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
+    "mistral":   os.getenv("MISTRAL_MODEL", "mistral-large-latest"),
+}
+
+# provider API base URLs
+PROVIDER_URLS = {
+    "anthropic": "https://api.anthropic.com/v1/messages",
+    "deepseek":  "https://api.deepseek.com/v1/chat/completions",
+    "groq":      "https://api.groq.com/openai/v1/chat/completions",
+    "mistral":   "https://api.mistral.ai/v1/chat/completions",
+}
+
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 
-GEMINI_MODEL = "gemini-2.5-flash"
+# load all provider keys: {provider: {stage: key_value}}
+_PROVIDER_KEYS = {}
+for _prov, _prefix in _PROVIDER_PREFIX.items():
+    _PROVIDER_KEYS[_prov] = {}
+    for _stage in STAGES:
+        _env_name = f"{_prefix}_KEY_{_stage.upper()}"
+        _val = os.getenv(_env_name, "").strip()
+        if _val:
+            _PROVIDER_KEYS[_prov][_stage] = _val
+
+# legacy fallback: GEMINI_API_KEY -> gemini refine key
+_gemini_legacy = os.getenv("GEMINI_API_KEY", "").strip()
+if _gemini_legacy and "refine" not in _PROVIDER_KEYS.get("gemini", {}):
+    _PROVIDER_KEYS.setdefault("gemini", {})["refine"] = _gemini_legacy
+
+
 GEMINI_MAX_RETRIES = 3
 GEMINI_RETRY_DELAYS = [2, 5, 10]
 
-# per-stage output token caps — generous but not wasteful
+# per-stage output token caps
 STAGE_MAX_TOKENS = {
     "refine":        512,
     "filter":        1024,
@@ -34,12 +76,70 @@ STAGE_MAX_TOKENS = {
     "company_check": 3072,
 }
 
-# stages that output JSON — use response_mime_type for reliable parsing
+# stages that output JSON
 STAGE_JSON_MODE = {"classify", "file_analysis"}
 
-# per-key rate limit tracking: key -> {last_429: float, cooldown_until: float, fails: int}
+# per-key rate limit tracking
 _key_state = {}
 
+
+# ============================================================
+# PROVIDER MANAGEMENT
+# ============================================================
+
+def set_provider(name: str):
+    """set the active AI provider (called by dashboard per-job)"""
+    global _active_provider
+    name = name.strip().lower()
+    if name not in PROVIDERS:
+        print(f"  [!] Unknown provider '{name}', falling back to gemini")
+        name = "gemini"
+    _active_provider = name
+    print(f"  [*] AI provider set to: {name}")
+
+
+def get_provider() -> str:
+    """get the currently active provider"""
+    return _active_provider
+
+
+def _get_provider_key(provider: str, stage: str) -> str:
+    """
+    get the best available API key for a provider+stage.
+    fallback chain: stage key -> refine key -> any other key for that provider.
+    """
+    keys = _PROVIDER_KEYS.get(provider, {})
+    if not keys:
+        return None
+
+    # try stage-specific key first
+    candidates = []
+    stage_key = keys.get(stage)
+    if stage_key:
+        candidates.append(stage_key)
+
+    # try refine key as fallback
+    refine_key = keys.get("refine")
+    if refine_key and refine_key not in candidates:
+        candidates.append(refine_key)
+
+    # try any other key
+    for other_stage, other_key in keys.items():
+        if other_key and other_key not in candidates:
+            candidates.append(other_key)
+
+    # return first available (not in cooldown)
+    for key in candidates:
+        if _is_key_available(key):
+            return key
+
+    # all in cooldown — return first anyway
+    return candidates[0] if candidates else None
+
+
+# ============================================================
+# RATE LIMIT TRACKING
+# ============================================================
 
 def _is_key_available(key: str) -> bool:
     """check if a key is not in cooldown"""
@@ -54,7 +154,6 @@ def _record_rate_limit(key: str):
     state = _key_state.setdefault(key, {"fails": 0, "cooldown_until": 0})
     state["fails"] = state.get("fails", 0) + 1
     state["last_429"] = time.time()
-    # exponential cooldown: 30s, 60s, 120s
     cooldown = min(30 * (2 ** (state["fails"] - 1)), 120)
     state["cooldown_until"] = time.time() + cooldown
     print(f"  [!] Key ...{key[-4:]} rate limited, cooldown {cooldown}s")
@@ -66,31 +165,192 @@ def _record_success(key: str):
         _key_state[key]["fails"] = 0
 
 
-def _get_gemini_key(stage: str) -> str:
-    """get the best available api key, skipping keys in cooldown. rotates across all keys."""
-    # try stage-specific key first
-    candidates = []
-    stage_key = STAGE_KEY_MAP.get(stage)
-    if stage_key and stage_key.strip():
-        candidates.append(stage_key.strip())
-    # try fallback key
-    if GEMINI_FALLBACK_KEY and GEMINI_FALLBACK_KEY.strip():
-        fb = GEMINI_FALLBACK_KEY.strip()
-        if fb not in candidates:
-            candidates.append(fb)
-    # try keys from other stages
-    for other_stage, other_key in STAGE_KEY_MAP.items():
-        if other_key and other_key.strip():
-            k = other_key.strip()
-            if k not in candidates:
-                candidates.append(k)
-    # return first available (not in cooldown)
-    for key in candidates:
-        if _is_key_available(key):
-            return key
-    # all in cooldown — return first anyway (will retry)
-    return candidates[0] if candidates else None
+# ============================================================
+# PROVIDER API CALLS
+# ============================================================
 
+def _call_gemini(prompt: str, api_key: str, stage: str = "summary", temperature: float = 0.3) -> str:
+    """call gemini api with retry logic for rate limits and optional JSON mode"""
+    model = PROVIDER_MODELS["gemini"]
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+
+    max_tokens = STAGE_MAX_TOKENS.get(stage, 4096)
+    gen_config = {
+        "temperature": temperature,
+        "maxOutputTokens": max_tokens,
+    }
+    if stage in STAGE_JSON_MODE:
+        gen_config["responseMimeType"] = "application/json"
+
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": gen_config
+    }
+
+    for attempt in range(GEMINI_MAX_RETRIES):
+        try:
+            response = requests.post(url, json=payload, timeout=60)
+
+            if response.status_code == 429:
+                _record_rate_limit(api_key)
+                delay = GEMINI_RETRY_DELAYS[attempt] if attempt < len(GEMINI_RETRY_DELAYS) else 10
+                print(f"  [!] Rate limited (429). Retrying in {delay}s... (attempt {attempt + 1}/{GEMINI_MAX_RETRIES})")
+                time.sleep(delay)
+                continue
+
+            response.raise_for_status()
+            _record_success(api_key)
+            data = response.json()
+
+            candidates = data.get("candidates", [])
+            if candidates:
+                parts = candidates[0].get("content", {}).get("parts", [])
+                if parts:
+                    return parts[0].get("text", "")
+            return ""
+        except requests.exceptions.HTTPError as e:
+            if e.response.status_code != 429:
+                print(f"  [!] Gemini API error: {e.response.status_code}")
+                raise
+        except Exception as e:
+            print(f"  [!] Gemini request failed: {str(e)[:80]}")
+            raise
+
+    raise Exception("Gemini rate limit exceeded after all retries")
+
+
+def _call_anthropic(prompt: str, api_key: str, stage: str = "summary", temperature: float = 0.3) -> str:
+    """call anthropic messages API"""
+    url = PROVIDER_URLS["anthropic"]
+    model = PROVIDER_MODELS["anthropic"]
+    max_tokens = STAGE_MAX_TOKENS.get(stage, 4096)
+
+    headers = {
+        "x-api-key": api_key,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+    }
+
+    payload = {
+        "model": model,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+        "messages": [{"role": "user", "content": prompt}],
+    }
+
+    for attempt in range(GEMINI_MAX_RETRIES):
+        try:
+            response = requests.post(url, json=payload, headers=headers, timeout=90)
+
+            if response.status_code == 429:
+                _record_rate_limit(api_key)
+                delay = GEMINI_RETRY_DELAYS[attempt] if attempt < len(GEMINI_RETRY_DELAYS) else 10
+                print(f"  [!] Anthropic rate limited. Retrying in {delay}s... (attempt {attempt + 1}/{GEMINI_MAX_RETRIES})")
+                time.sleep(delay)
+                continue
+
+            response.raise_for_status()
+            _record_success(api_key)
+            data = response.json()
+
+            content = data.get("content", [])
+            if content and isinstance(content, list):
+                for block in content:
+                    if block.get("type") == "text":
+                        return block.get("text", "")
+            return ""
+        except requests.exceptions.HTTPError as e:
+            if e.response is not None and e.response.status_code != 429:
+                print(f"  [!] Anthropic API error: {e.response.status_code}")
+                raise
+        except Exception as e:
+            print(f"  [!] Anthropic request failed: {str(e)[:80]}")
+            raise
+
+    raise Exception("Anthropic rate limit exceeded after all retries")
+
+
+def _call_openai_compatible(prompt: str, api_key: str, provider: str, stage: str = "summary", temperature: float = 0.3) -> str:
+    """call OpenAI-compatible API (used by DeepSeek, Groq, Mistral)"""
+    url = PROVIDER_URLS[provider]
+    model = PROVIDER_MODELS[provider]
+    max_tokens = STAGE_MAX_TOKENS.get(stage, 4096)
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+    payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+    }
+
+    # add JSON mode for structured output stages
+    if stage in STAGE_JSON_MODE:
+        payload["response_format"] = {"type": "json_object"}
+
+    for attempt in range(GEMINI_MAX_RETRIES):
+        try:
+            response = requests.post(url, json=payload, headers=headers, timeout=90)
+
+            if response.status_code == 429:
+                _record_rate_limit(api_key)
+                delay = GEMINI_RETRY_DELAYS[attempt] if attempt < len(GEMINI_RETRY_DELAYS) else 10
+                print(f"  [!] {provider.title()} rate limited. Retrying in {delay}s... (attempt {attempt + 1}/{GEMINI_MAX_RETRIES})")
+                time.sleep(delay)
+                continue
+
+            response.raise_for_status()
+            _record_success(api_key)
+            data = response.json()
+
+            choices = data.get("choices", [])
+            if choices:
+                message = choices[0].get("message", {})
+                return message.get("content", "")
+            return ""
+        except requests.exceptions.HTTPError as e:
+            if e.response is not None and e.response.status_code != 429:
+                print(f"  [!] {provider.title()} API error: {e.response.status_code}")
+                raise
+        except Exception as e:
+            print(f"  [!] {provider.title()} request failed: {str(e)[:80]}")
+            raise
+
+    raise Exception(f"{provider.title()} rate limit exceeded after all retries")
+
+
+def _call_deepseek(prompt: str, api_key: str, stage: str = "summary", temperature: float = 0.3) -> str:
+    """call DeepSeek API (OpenAI-compatible)"""
+    return _call_openai_compatible(prompt, api_key, "deepseek", stage, temperature)
+
+
+def _call_groq(prompt: str, api_key: str, stage: str = "summary", temperature: float = 0.3) -> str:
+    """call Groq API (OpenAI-compatible)"""
+    return _call_openai_compatible(prompt, api_key, "groq", stage, temperature)
+
+
+def _call_mistral(prompt: str, api_key: str, stage: str = "summary", temperature: float = 0.3) -> str:
+    """call Mistral API (OpenAI-compatible)"""
+    return _call_openai_compatible(prompt, api_key, "mistral", stage, temperature)
+
+
+# provider -> call function mapping
+_PROVIDER_CALL_FN = {
+    "gemini":    _call_gemini,
+    "anthropic": _call_anthropic,
+    "deepseek":  _call_deepseek,
+    "groq":      _call_groq,
+    "mistral":   _call_mistral,
+}
+
+
+# ============================================================
+# OLLAMA (LOCAL MODEL)
+# ============================================================
 
 def _ollama_available() -> bool:
     """check if ollama is running locally"""
@@ -113,61 +373,10 @@ def _get_ollama_model() -> str:
     return None
 
 
-def _call_gemini(prompt: str, api_key: str, stage: str = "summary", temperature: float = 0.3) -> str:
-    """call gemini api with retry logic for rate limits and optional JSON mode"""
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={api_key}"
-    
-    max_tokens = STAGE_MAX_TOKENS.get(stage, 4096)
-    gen_config = {
-        "temperature": temperature,
-        "maxOutputTokens": max_tokens,
-    }
-    # JSON mode for structured output stages
-    if stage in STAGE_JSON_MODE:
-        gen_config["responseMimeType"] = "application/json"
-    
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": gen_config
-    }
-    
-    for attempt in range(GEMINI_MAX_RETRIES):
-        try:
-            response = requests.post(url, json=payload, timeout=60)
-            
-            # handle rate limit with retry + tracking
-            if response.status_code == 429:
-                _record_rate_limit(api_key)
-                delay = GEMINI_RETRY_DELAYS[attempt] if attempt < len(GEMINI_RETRY_DELAYS) else 10
-                print(f"  [!] Rate limited (429). Retrying in {delay}s... (attempt {attempt + 1}/{GEMINI_MAX_RETRIES})")
-                time.sleep(delay)
-                continue
-            
-            response.raise_for_status()
-            _record_success(api_key)
-            data = response.json()
-            
-            candidates = data.get("candidates", [])
-            if candidates:
-                parts = candidates[0].get("content", {}).get("parts", [])
-                if parts:
-                    return parts[0].get("text", "")
-            return ""
-        except requests.exceptions.HTTPError as e:
-            if e.response.status_code != 429:
-                print(f"  [!] Gemini API error: {e.response.status_code}")
-                raise
-        except Exception as e:
-            print(f"  [!] Gemini request failed: {str(e)[:80]}")
-            raise
-    
-    raise Exception("Gemini rate limit exceeded after all retries")
-
-
 def _call_ollama(prompt: str, model: str) -> str:
     """call ollama api for local model inference"""
     url = f"{OLLAMA_BASE_URL}/api/generate"
-    
+
     payload = {
         "model": model,
         "prompt": prompt,
@@ -176,7 +385,7 @@ def _call_ollama(prompt: str, model: str) -> str:
             "temperature": 0.3,
         }
     }
-    
+
     try:
         response = requests.post(url, json=payload, timeout=120)
         response.raise_for_status()
@@ -186,29 +395,50 @@ def _call_ollama(prompt: str, model: str) -> str:
         raise
 
 
+# ============================================================
+# UNIFIED LLM DISPATCHER
+# ============================================================
+
 def call_llm(prompt: str, stage: str, temperature: float = 0.3) -> str:
     """
     call the best available llm for a given stage.
-    fallback chain: stage-specific gemini key -> other keys -> ollama -> error
+    uses active provider, then falls back to ollama on failure.
     """
-    # try gemini first
-    gemini_key = _get_gemini_key(stage)
-    if gemini_key:
+    provider = _active_provider
+
+    # ollama path — direct
+    if provider == "ollama":
+        if _ollama_available():
+            model = _get_ollama_model()
+            if model:
+                print(f"  [*] Using Ollama ({model}) for stage '{stage}'")
+                try:
+                    return _call_ollama(prompt, model)
+                except Exception:
+                    print(f"  [!] Ollama failed for stage '{stage}'")
+        print(f"  [-] Ollama not available for stage '{stage}'. Skipping AI step.")
+        return None
+
+    # cloud provider path
+    api_key = _get_provider_key(provider, stage)
+    call_fn = _PROVIDER_CALL_FN.get(provider)
+
+    if api_key and call_fn:
         try:
-            return _call_gemini(prompt, gemini_key, stage=stage, temperature=temperature)
+            return call_fn(prompt, api_key, stage=stage, temperature=temperature)
         except Exception:
-            print(f"  [!] Gemini failed for stage '{stage}', trying fallback...")
-    
-    # try ollama
+            print(f"  [!] {provider.title()} failed for stage '{stage}', trying fallback...")
+
+    # fallback: try ollama
     if _ollama_available():
         model = _get_ollama_model()
         if model:
-            print(f"  [*] Using Ollama ({model}) for stage '{stage}'")
+            print(f"  [*] Falling back to Ollama ({model}) for stage '{stage}'")
             try:
                 return _call_ollama(prompt, model)
             except Exception:
                 print(f"  [!] Ollama also failed for stage '{stage}'")
-    
+
     print(f"  [-] No LLM available for stage '{stage}'. Skipping AI step.")
     return None
 
@@ -221,19 +451,19 @@ def _call_llm_json_retry(prompt: str, stage: str) -> list:
     result = call_llm(prompt, stage)
     if not result:
         return None
-    
+
     # first parse attempt
     try:
         return _parse_classification_json(result)
     except (json.JSONDecodeError, ValueError) as e:
         print(f"  [!] JSON parse failed: {str(e)[:50]}. Retrying with temp=0.1...")
-    
+
     # retry with lower temperature and stricter prompt
     retry_prompt = "Output ONLY raw JSON array. No markdown fences, no explanation, no text before or after.\n\n" + prompt
     result = call_llm(retry_prompt, stage, temperature=0.1)
     if not result:
         return None
-    
+
     try:
         return _parse_classification_json(result)
     except (json.JSONDecodeError, ValueError) as e:
@@ -253,7 +483,7 @@ def refine_query(query: str) -> list:
     prompt = f"""You are a Dark Web Threat Intelligence Analyst. Generate search queries for dark web search engines related to the provided input.
 Rules:
 - Generate exactly 5 queries, one per line.
-- Each query must be 2–5 words and include the original target name.
+- Each query must be 1–3 words and include the original target name.
 - Each query must target a different threat surface: breach/leak, ransomware/extortion, credential exposure, forum/market activity, paste/database dump.
 - Use realistic dark web terminology (breach, leak, ransomware, credentials, combolist, stealer logs, selling, access, dump, paste).
 No logical operators, numbering, quotes, or explanations.
@@ -288,10 +518,10 @@ def filter_results(query: str, results: list, limit: int = 20) -> list:
     """
     if not results:
         return []
-    
+
     if len(results) <= limit:
         return results
-    
+
     # build numbered list for llm
     results_text = []
     for i, item in enumerate(results, 1):
@@ -302,9 +532,9 @@ def filter_results(query: str, results: list, limit: int = 20) -> list:
             title = str(item)[:60]
             url_short = str(item)[:50]
         results_text.append(f"{i}. [{title}] — {url_short}")
-    
+
     results_block = "\n".join(results_text)
-    
+
     prompt = f"""You are a Cybercrime Threat Intelligence Expert. You are given a dark web search query and a list of search results. From the {len(results)} results, select the top {limit} results most likely to contain real leaked data, credentials, or breach intelligence.
 Query: {query}
 Results:
@@ -328,7 +558,7 @@ Output:"""
                     parsed.append(idx)
             except ValueError:
                 continue
-        
+
         # deduplicate while preserving order
         seen = set()
         unique_indices = []
@@ -336,11 +566,11 @@ Output:"""
             if idx not in seen:
                 seen.add(idx)
                 unique_indices.append(idx)
-        
+
         if unique_indices:
             filtered = [results[i - 1] for i in unique_indices[:limit]]
             return filtered
-    
+
     # fallback: return first limit results
     print("  [!] Could not parse filter response. Using first results.")
     return results[:limit]
@@ -369,14 +599,14 @@ def classify_threats(query: str, scraped_data: dict) -> dict:
     """
     if not scraped_data:
         return {}
-    
+
     # clean content before classification
     try:
         from content_cleaner import clean_content, extract_meaningful_section
         use_cleaner = True
     except ImportError:
         use_cleaner = False
-    
+
     # build entries with cleaned content
     entries = []
     for url, content in scraped_data.items():
@@ -387,27 +617,27 @@ def classify_threats(query: str, scraped_data: dict) -> dict:
         else:
             content = content[:800]
         entries.append((url, content))
-    
+
     if not entries:
         return {}
-    
+
     # batch processing — 6 pages per LLM call to prevent JSON truncation
     BATCH_SIZE = 6
     all_classified = {}
-    
+
     for batch_start in range(0, len(entries), BATCH_SIZE):
         batch = entries[batch_start:batch_start + BATCH_SIZE]
         batch_num = (batch_start // BATCH_SIZE) + 1
         total_batches = (len(entries) + BATCH_SIZE - 1) // BATCH_SIZE
-        
+
         if total_batches > 1:
             print(f"  [*] Classifying batch {batch_num}/{total_batches} ({len(batch)} pages)...")
-        
+
         content_block = "\n\n".join(
-            f"[{i+1}] URL: {url}\nContent: {content}" 
+            f"[{i+1}] URL: {url}\nContent: {content}"
             for i, (url, content) in enumerate(batch)
         )
-        
+
         prompt = f"""Threat classification engine. Classify each page and extract the KEY PHRASE (max 50 chars) that is the actual threat indicator.
 
 Context: {query}
@@ -422,7 +652,7 @@ Output ONLY valid JSON array, no markdown, no explanation:
 [{{"url": "...", "category": "...", "severity": "...", "reason": "short reason max 30 chars", "evidence": "key threat phrase from page max 50 chars"}}]
 
 JSON:"""
-        
+
         parsed = _call_llm_json_retry(prompt, "classify")
         if parsed:
             try:
@@ -442,7 +672,7 @@ JSON:"""
             # LLM unavailable — fallback for this batch
             for url, _ in batch:
                 all_classified[url] = {"category": "other", "severity": "medium", "reason": "LLM unavailable", "evidence": ""}
-    
+
     return all_classified
 
 # ============================================================
@@ -544,14 +774,14 @@ def generate_summary(query: str, scraped_data: dict, classifications: dict, rege
     """
     if not scraped_data:
         return "No data available for summary generation."
-    
+
     # clean content for summary
     try:
         from content_cleaner import clean_content, extract_meaningful_section
         use_cleaner = True
     except ImportError:
         use_cleaner = False
-    
+
     # build compact entries with cleaned content and classification data
     # de-duplicate mirror pages (same page title from different .onion mirrors)
     seen_titles = set()
@@ -559,35 +789,35 @@ def generate_summary(query: str, scraped_data: dict, classifications: dict, rege
     for i, (url, content) in enumerate(scraped_data.items(), 1):
         if content.startswith("[ERROR"):
             continue
-        
+
         # skip navigation/meta pages that snuck through
         skip_suffixes = ['/whats-new', '/whats-new/posts', '/members', '/rules']
         if any(url.rstrip('/').endswith(s) for s in skip_suffixes):
             continue
-        
+
         cls = classifications.get(url, {})
         cat = cls.get("category", "unknown")
         sev = cls.get("severity", "unknown")
         evidence = cls.get("evidence", "N/A")
-        
+
         if use_cleaner:
             display_content = extract_meaningful_section(clean_content(content), max_chars=400)
         else:
             display_content = content[:400]
-        
+
         # de-dup by first 80 chars of cleaned content (catches mirror sites)
         content_sig = display_content[:80].strip().lower()
         if content_sig in seen_titles:
             continue
         seen_titles.add(content_sig)
-        
+
         entries.append(f"[{i}] URL: {url}\nClassification: {cat} | Severity: {sev}\nEvidence: {evidence}\nContent Preview: {display_content}")
-    
+
     if not entries:
         return "No valid content to summarize."
-    
+
     content_block = "\n\n---\n\n".join(entries)
-    
+
     # classification stats
     cat_counts = {}
     sev_counts = {}
@@ -596,10 +826,10 @@ def generate_summary(query: str, scraped_data: dict, classifications: dict, rege
         sev = cls.get("severity", "low")
         cat_counts[cat] = cat_counts.get(cat, 0) + 1
         sev_counts[sev] = sev_counts.get(sev, 0) + 1
-    
+
     threat_matrix = "Threat Distribution: " + ", ".join(f"{k}: {v}" for k, v in cat_counts.items())
     severity_matrix = "Severity Distribution: " + ", ".join(f"{k}: {v}" for k, v in sev_counts.items())
-    
+
     # format threat actor contacts — enriched format with context
     contacts_block = ""
     if actor_contacts:
@@ -617,7 +847,7 @@ def generate_summary(query: str, scraped_data: dict, classifications: dict, rege
                     else:
                         contact_lines.append(f"  {contact_type}: {item}")
         contacts_block = "\n".join(contact_lines[:25])
-    
+
     # format regex IOCs — filter out catalog noise (types with >30 items from single page)
     ioc_block = ""
     if regex_iocs:
@@ -631,7 +861,7 @@ def generate_summary(query: str, scraped_data: dict, classifications: dict, rege
                 for val in values[:5]:
                     ioc_lines.append(f"  {ioc_type}: {val} [from: {url[:40]}]")
         ioc_block = "\n".join(ioc_lines[:25])
-    
+
     prompt = f"""You are a senior Cyber Threat Intelligence Analyst. Produce a comprehensive dark web OSINT report based on the intelligence data below. ANALYZE the data thoroughly — extract meaning, identify patterns, assess real threats, and provide actionable intelligence.
 
 Investigation Query: "{query}"
@@ -718,7 +948,7 @@ OUTPUT:"""
     result = call_llm(prompt, "summary")
     if result:
         return result.strip()
-    
+
     return "Summary generation failed. Raw data saved to output/scraped_data.txt."
 
 
@@ -733,48 +963,48 @@ def verify_threat_files(query: str, file_analysis: dict) -> dict:
     """
     if not file_analysis:
         return {}
-    
+
     # build compact entries for each file
     entries = []
     for i, (url, analysis) in enumerate(file_analysis.items(), 1):
         if not isinstance(analysis, dict):
             continue
-        
+
         entry_lines = [f"[{i}] URL: {url[:80]}"]
-        
+
         ftype = analysis.get('file_type', analysis.get('type', 'unknown'))
         entry_lines.append(f"  File Type: {ftype}")
-        
+
         if 'size_bytes' in analysis and analysis['size_bytes']:
             entry_lines.append(f"  Size: {analysis['size_bytes']} bytes")
-        
+
         if 'total_size' in analysis:
             entry_lines.append(f"  Total Size: {analysis['total_size']} bytes")
-        
+
         if 'files' in analysis and analysis['files']:
             file_list = ', '.join(
-                f"{f['path']} ({f.get('size', 0)} bytes)" 
+                f"{f['path']} ({f.get('size', 0)} bytes)"
                 for f in analysis['files'][:8]
             )
             entry_lines.append(f"  Files: {file_list}")
-        
+
         if 'header_preview' in analysis and analysis['header_preview']:
             preview = analysis['header_preview'][:800]
             entry_lines.append(f"  Header Preview:\n{preview}")
-        
+
         if 'name' in analysis:
             entry_lines.append(f"  Name: {analysis['name']}")
-        
+
         if 'info_hash' in analysis and analysis['info_hash']:
             entry_lines.append(f"  Torrent Hash: {analysis['info_hash']}")
-        
+
         entries.append('\n'.join(entry_lines))
-    
+
     if not entries:
         return {}
-    
+
     content_block = '\n\n---\n\n'.join(entries)
-    
+
     prompt = f"""Threat verification analyst. Examine file headers and metadata from dark web sources. You see ONLY the first 4KB header (not full content) plus torrent metadata.
 
 Context: {query}
@@ -826,52 +1056,72 @@ JSON:"""
             return verdicts
         except (KeyError, TypeError) as e:
             print(f"  [!] Failed to process file verification: {str(e)[:60]}")
-    
+
     # fallback — cover ALL files
     return {u: {"verdict": "inconclusive", "confidence": "low", "reason": "verification unavailable", "data_type": "unknown"}
             for u in file_analysis}
 
 
+# ============================================================
+# PROVIDER INFO
+# ============================================================
+
 def get_provider_info() -> dict:
     """check which providers are available and return status info"""
     info = {
-        "gemini_keys": {},
+        "active_provider": _active_provider,
+        "providers": {},
         "ollama_available": _ollama_available(),
         "ollama_model": _get_ollama_model() if _ollama_available() else None,
     }
-    
-    for stage in ["refine", "filter", "classify", "summary"]:
-        key = _get_gemini_key(stage)
-        if key:
-            # show first 10 and last 4 chars only
-            masked = key[:10] + "..." + key[-4:]
-            info["gemini_keys"][stage] = masked
-        else:
-            info["gemini_keys"][stage] = None
-    
+
+    for provider in PROVIDERS:
+        if provider == "ollama":
+            info["providers"]["ollama"] = {
+                "available": info["ollama_available"],
+                "model": info["ollama_model"],
+            }
+            continue
+
+        prov_info = {"keys": {}, "model": PROVIDER_MODELS.get(provider, "unknown")}
+        keys = _PROVIDER_KEYS.get(provider, {})
+        for stage in STAGES:
+            key = keys.get(stage)
+            if key:
+                masked = key[:10] + "..." + key[-4:] if len(key) > 14 else "***"
+                prov_info["keys"][stage] = masked
+            else:
+                prov_info["keys"][stage] = None
+        prov_info["has_any_key"] = any(v is not None for v in prov_info["keys"].values())
+        info["providers"][provider] = prov_info
+
     return info
 
 
 if __name__ == "__main__":
     print("\n[+] AI Engine — Provider Check")
-    print("=" * 40)
-    
+    print("=" * 50)
+
     info = get_provider_info()
-    
-    print("\nGemini API Keys:")
-    for stage, key in info["gemini_keys"].items():
-        status = f"✓ {key}" if key else "✗ Not set"
-        print(f"  {stage:10s} : {status}")
-    
-    print(f"\nOllama:")
-    if info["ollama_available"]:
-        print(f"  Status : ✓ Running")
-        print(f"  Model  : {info['ollama_model']}")
-    else:
-        print(f"  Status : ✗ Not available")
-    
+    print(f"\nActive Provider: {info['active_provider']}")
+
+    for provider, prov_data in info["providers"].items():
+        print(f"\n--- {provider.upper()} ---")
+        if provider == "ollama":
+            status = "✓ Running" if prov_data["available"] else "✗ Not available"
+            print(f"  Status : {status}")
+            if prov_data.get("model"):
+                print(f"  Model  : {prov_data['model']}")
+        else:
+            print(f"  Model  : {prov_data['model']}")
+            has_key = prov_data.get("has_any_key", False)
+            print(f"  Keys   : {'✓ Configured' if has_key else '✗ No keys set'}")
+            for stage, key in prov_data["keys"].items():
+                status = f"✓ {key}" if key else "✗ Not set"
+                print(f"    {stage:15s} : {status}")
+
     # quick test call
-    print("\n[+] Testing LLM call (refine stage)...")
+    print(f"\n[+] Testing LLM call ({info['active_provider']}, refine stage)...")
     result = call_llm("Say 'hello' in one word.", "refine")
     if result:
         print(f"  Response: {result.strip()}")
