@@ -198,11 +198,20 @@ def search_dark_web(query: str, max_workers: int = 3, num_engines: int = None) -
 def save_results(results: list, filename: str = "output/results.txt"):
     os.makedirs("output", exist_ok=True)
     with open(filename, "w", encoding="utf-8") as f:
-        for item in results:
+        f.write("## 🔎 Search Results\n\n")
+        f.write(f"**{len(results)} results found**\n\n")
+        f.write("| # | Title | URL |\n")
+        f.write("|---|---|---|\n")
+        for i, item in enumerate(results, 1):
             if isinstance(item, dict):
-                f.write(f"{item['url']} | {item.get('title', 'Untitled')}\n")
+                url = item['url'].replace("|", "\\|")
+                title = item.get('title', 'Untitled').replace("|", "\\|")
+                # Truncate very long titles
+                if len(title) > 80:
+                    title = title[:77] + "..."
+                f.write(f"| {i} | {title} | `{url}` |\n")
             else:
-                f.write(item + "\n")
+                f.write(f"| {i} | — | `{item}` |\n")
     print(f"\n[+] Saved {len(results)} results to {filename}")
 
 

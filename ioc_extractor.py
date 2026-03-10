@@ -383,14 +383,13 @@ def extract_contacts_from_scraped(scraped_data: dict) -> dict:
 
 
 def format_iocs_summary(all_iocs: dict) -> str:
-    """format extracted IOCs into a readable text summary"""
+    """format extracted IOCs into a markdown summary"""
     if not all_iocs:
         return "No IOCs extracted."
 
     lines = []
-    lines.append("=" * 60)
-    lines.append("INDICATORS OF COMPROMISE (Auto-Extracted)")
-    lines.append("=" * 60)
+    lines.append("## 🔴 Indicators of Compromise (Auto-Extracted)")
+    lines.append("")
 
     # aggregate across all sources
     aggregated = {}
@@ -405,21 +404,37 @@ def format_iocs_summary(all_iocs: dict) -> str:
 
     # display label mapping
     labels = {
-        "email": "Email Addresses",
-        "credential_pair": "Credential Pairs",
-        "ipv4": "IP Addresses",
-        "domain": "Domains",
-        "url": "URLs",
-        "btc_wallet": "Bitcoin Wallets",
-        "eth_wallet": "Ethereum Wallets",
-        "xmr_wallet": "Monero Wallets",
-        "ltc_wallet": "Litecoin Wallets",
-        "md5_hash": "MD5 Hashes",
-        "sha256_hash": "SHA-256 Hashes",
-        "phone": "Phone Numbers",
-        "credit_card": "Credit Card Numbers",
-        "ssn": "SSN-like Patterns",
+        "email": "📧 Email Addresses",
+        "credential_pair": "🔑 Credential Pairs",
+        "ipv4": "🌐 IP Addresses",
+        "domain": "🌍 Domains",
+        "url": "🔗 URLs",
+        "btc_wallet": "₿ Bitcoin Wallets",
+        "eth_wallet": "⟠ Ethereum Wallets",
+        "xmr_wallet": "ɱ Monero Wallets",
+        "ltc_wallet": "Ł Litecoin Wallets",
+        "md5_hash": "#️⃣ MD5 Hashes",
+        "sha256_hash": "#️⃣ SHA-256 Hashes",
+        "phone": "📞 Phone Numbers",
+        "credit_card": "💳 Credit Card Numbers",
+        "ssn": "🆔 SSN-like Patterns",
     }
+
+    # overview table
+    overview_rows = []
+    for ioc_type in ["credential_pair", "email", "credit_card", "ssn", "btc_wallet",
+                      "eth_wallet", "xmr_wallet", "ltc_wallet", "ipv4", "domain",
+                      "phone", "md5_hash", "sha256_hash", "url"]:
+        if ioc_type in aggregated:
+            label = labels.get(ioc_type, ioc_type)
+            overview_rows.append(f"| {label} | {len(aggregated[ioc_type])} |")
+
+    if overview_rows:
+        lines.append("### Overview")
+        lines.append("| Category | Count |")
+        lines.append("|---|---|")
+        lines.extend(overview_rows)
+        lines.append("")
 
     for ioc_type in ["credential_pair", "email", "credit_card", "ssn", "btc_wallet",
                       "eth_wallet", "xmr_wallet", "ltc_wallet", "ipv4", "domain",
@@ -427,25 +442,29 @@ def format_iocs_summary(all_iocs: dict) -> str:
         if ioc_type in aggregated:
             label = labels.get(ioc_type, ioc_type)
             items = aggregated[ioc_type]
-            lines.append(f"\n{label} ({len(items)} found):")
+            lines.append(f"### {label} ({len(items)} found)")
+            lines.append("")
+            lines.append("| Value | Source |")
+            lines.append("|---|---|")
             for val, sources in sorted(items.items())[:20]:  # cap display at 20 per type
-                source_short = sources[0]
-                lines.append(f"  • {val}  [from: {source_short}]")
+                source_short = sources[0].replace("|", "\\|")
+                val_escaped = val.replace("|", "\\|")
+                lines.append(f"| `{val_escaped}` | {source_short} |")
             if len(items) > 20:
-                lines.append(f"  ... and {len(items) - 20} more")
+                lines.append(f"\n*... and {len(items) - 20} more*")
+            lines.append("")
 
     return "\n".join(lines)
 
 
 def format_contacts_summary(all_contacts: dict) -> str:
-    """format extracted threat actor contacts with context into a readable summary"""
+    """format extracted threat actor contacts with context into a markdown summary"""
     if not all_contacts:
         return "No threat actor contacts extracted."
 
     lines = []
-    lines.append("=" * 60)
-    lines.append("THREAT ACTOR CONTACTS (Auto-Extracted)")
-    lines.append("=" * 60)
+    lines.append("## 📬 Threat Actor Contacts (Auto-Extracted)")
+    lines.append("")
 
     # aggregate across all sources, keeping context
     aggregated = {}  # contact_type -> {value: {contexts: [], sources: []}}
@@ -464,30 +483,30 @@ def format_contacts_summary(all_contacts: dict) -> str:
                     aggregated[contact_type][val]["sources"].append(url)
 
     labels = {
-        "telegram": "Telegram",
-        "wickr": "Wickr",
-        "signal": "Signal",
-        "session": "Session",
-        "jabber_xmpp": "Jabber/XMPP",
-        "discord": "Discord",
-        "matrix": "Matrix",
-        "keybase": "Keybase",
-        "whatsapp": "WhatsApp",
-        "element_riot": "Element/Riot",
-        "threema": "Threema",
-        "briar": "Briar",
-        "simplex": "SimpleX",
-        "tox_id": "TOX ID",
-        "pgp_fingerprint": "PGP Fingerprint",
-        "pgp_keyid": "PGP Key ID",
-        "protonmail": "ProtonMail",
-        "tutanota": "Tutanota/Tuta",
-        "onionmail": "OnionMail/DNMX",
-        "cock_li": "cock.li",
-        "forum_handle": "Forum Handle",
-        "onion_contact": "Onion Contact Page",
-        "icq": "ICQ",
-        "skype": "Skype",
+        "telegram": "📱 Telegram",
+        "wickr": "💬 Wickr",
+        "signal": "📶 Signal",
+        "session": "🔒 Session",
+        "jabber_xmpp": "💭 Jabber/XMPP",
+        "discord": "🎮 Discord",
+        "matrix": "🔷 Matrix",
+        "keybase": "🔑 Keybase",
+        "whatsapp": "📲 WhatsApp",
+        "element_riot": "🟢 Element/Riot",
+        "threema": "🟩 Threema",
+        "briar": "🌿 Briar",
+        "simplex": "🔐 SimpleX",
+        "tox_id": "☠️ TOX ID",
+        "pgp_fingerprint": "🔏 PGP Fingerprint",
+        "pgp_keyid": "🔏 PGP Key ID",
+        "protonmail": "📧 ProtonMail",
+        "tutanota": "📧 Tutanota/Tuta",
+        "onionmail": "🧅 OnionMail/DNMX",
+        "cock_li": "📧 cock.li",
+        "forum_handle": "👤 Forum Handle",
+        "onion_contact": "🧅 Onion Contact Page",
+        "icq": "💬 ICQ",
+        "skype": "💬 Skype",
     }
 
     display_order = [
@@ -499,23 +518,42 @@ def format_contacts_summary(all_contacts: dict) -> str:
         "forum_handle", "onion_contact",
     ]
 
+    # overview table
+    overview_rows = []
+    for contact_type in display_order:
+        if contact_type in aggregated:
+            label = labels.get(contact_type, contact_type)
+            overview_rows.append(f"| {label} | {len(aggregated[contact_type])} |")
+
+    if overview_rows:
+        lines.append("### Overview")
+        lines.append("| Platform | Count |")
+        lines.append("|---|---|")
+        lines.extend(overview_rows)
+        lines.append("")
+
     for contact_type in display_order:
         if contact_type in aggregated:
             label = labels.get(contact_type, contact_type)
             items = aggregated[contact_type]
-            lines.append(f"\n{label} ({len(items)} found):")
+            lines.append(f"### {label} ({len(items)} found)")
+            lines.append("")
+            lines.append("| Contact | Context | Sources |")
+            lines.append("|---|---|---|")
             for val, data in sorted(items.items())[:15]:
-                lines.append(f"  • {val}")
-                # show the best context snippet
+                val_escaped = val.replace("|", "\\|")
+                # pick the shortest non-empty context (most focused)
+                ctx = ""
                 if data["contexts"]:
-                    # pick the shortest non-empty context (most focused)
                     best_ctx = min(data["contexts"], key=len)
-                    if len(best_ctx) > 120:
-                        best_ctx = best_ctx[:120] + "..."
-                    lines.append(f"    Found near: \"{best_ctx}\"")
-                lines.append(f"    Pages: {len(data['sources'])} source(s)")
+                    if len(best_ctx) > 100:
+                        best_ctx = best_ctx[:100] + "..."
+                    ctx = best_ctx.replace("|", "\\|").replace("\n", " ")
+                src_count = f"{len(data['sources'])} page(s)"
+                lines.append(f"| `{val_escaped}` | {ctx} | {src_count} |")
             if len(items) > 15:
-                lines.append(f"  ... and {len(items) - 15} more")
+                lines.append(f"\n*... and {len(items) - 15} more*")
+            lines.append("")
 
     return "\n".join(lines)
 

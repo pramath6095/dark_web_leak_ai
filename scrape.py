@@ -387,15 +387,16 @@ def save_scraped_data(results: dict, filename: str = "output/scraped_data.txt"):
     os.makedirs("output", exist_ok=True)
     
     with open(filename, "w", encoding="utf-8") as f:
-        f.write("=" * 80 + "\n")
-        f.write("DARK WEB SCRAPED DATA\n")
-        f.write("=" * 80 + "\n\n")
+        f.write("## 🕸 Dark Web Scraped Data\n\n")
+        f.write(f"**{len(results)} pages scraped**\n\n")
+        f.write("---\n\n")
         
         for i, (url, content) in enumerate(results.items(), 1):
-            f.write(f"\n{'='*80}\n")
-            f.write(f"[{i}] URL: {url}\n")
-            f.write(f"{'='*80}\n\n")
-            f.write(content + "\n")
+            f.write(f"### [{i}] {url}\n\n")
+            # Truncate extremely long content for readability
+            display = content if len(content) <= 15000 else content[:15000] + "\n\n*... content truncated (full data preserved in raw scrape) ...*"
+            f.write(display + "\n\n")
+            f.write("---\n\n")
     
     print(f"\n[+] Saved scraped data to {filename}")
 
