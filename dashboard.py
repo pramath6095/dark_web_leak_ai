@@ -265,7 +265,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .modal-overlay.open { display: flex; }
   .modal {
     background: var(--surface); border: 1px solid var(--border); border-radius: 16px;
-    width: 100%; max-width: 820px; max-height: 85vh; display: flex; flex-direction: column;
+    width: 100%; max-width: 1000px; max-height: 90vh; display: flex; flex-direction: column;
     box-shadow: 0 24px 80px rgba(0,0,0,0.5);
   }
   .modal-header {
