@@ -323,10 +323,11 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .markdown-body code { background: rgba(0,0,0,0.3); padding: 2px 6px; border-radius: 4px; font-family: var(--mono); font-size: 12.5px; }
   .markdown-body pre { background: rgba(0,0,0,0.5); padding: 16px; border-radius: 8px; overflow-x: auto; margin-bottom: 16px; border: 1px solid var(--border); }
   .markdown-body pre code { background: none; padding: 0; border: none; }
-  .markdown-body table { width: 100%; border-collapse: collapse; margin-bottom: 16px; display: block; overflow-x: auto; white-space: nowrap; }
-  .markdown-body th, .markdown-body td { border: 1px solid var(--border); padding: 10px 14px; text-align: left; }
+  .markdown-body table { width: 100%; border-collapse: collapse; margin-bottom: 16px; display: block; overflow-x: auto; }
+  .markdown-body th, .markdown-body td { border: 1px solid var(--border); padding: 10px 14px; text-align: left; white-space: normal; word-break: break-word; }
   .markdown-body th { background: rgba(255,255,255,0.05); color: white; font-weight: 600; }
   .markdown-body tr:nth-child(even) { background: rgba(255,255,255,0.02); }
+  .markdown-body hr { border: none; border-top: 1px solid var(--border); margin: 24px 0; }
   .markdown-body a { color: var(--accent); text-decoration: none; }
   .markdown-body a:hover { text-decoration: underline; }
   .markdown-body blockquote { border-left: 4px solid var(--accent); padding-left: 16px; color: var(--muted); margin-bottom: 16px; }
@@ -560,94 +561,11 @@ document.getElementById('modal-overlay').addEventListener('click', function(e) {
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
 
 function renderContent(name, cls, text) {
-  if (cls === 'iocs')     return renderIOCs(text);
-  if (cls === 'contacts') return renderContacts(text);
-  if (cls === 'summary')  return renderSummary(text);
-  return `<div class="plain-text">${escHtml(text)}</div>`;
-}
-
-function renderSummary(text) {
+  // All output files are now markdown — render through marked
   if (typeof marked !== 'undefined') {
     return `<div class="markdown-body" style="background: var(--surface2); border: 1px solid var(--border); border-radius: 10px; padding: 24px; max-height: 60vh; overflow-y: auto;">${marked.parse(text)}</div>`;
   }
   return `<div class="plain-text" style="white-space: pre-wrap; max-height: 60vh; overflow-y: auto;">${escHtml(text)}</div>`;
-}
-
-function renderIOCs(text) {
-  // Try to parse structured IOC blocks, fall back to tag extraction
-  const lines = text.split('\\n');
-  const tags   = [];
-  const seen   = new Set();
-
-  for (const line of lines) {
-    const l = line.trim();
-    if (!l || l.startsWith('#') || l.startsWith('=') || l.startsWith('-')) continue;
-
-    // Try "TYPE: value" format
-    const m = l.match(/^([A-Za-z_]+)[\t ]*[:-][\t ]*(.+)$/);
-    if (m) {
-      const type = m[1].toLowerCase().replace(/_/g,' ');
-      const val  = m[2].trim();
-      if (!seen.has(val)) { seen.add(val); tags.push({ type, val }); }
-      continue;
-    }
-    // Bare values — guess type
-    if (!seen.has(l)) {
-      seen.add(l);
-      tags.push({ type: guessIOCType(l), val: l });
-    }
-  }
-
-  if (!tags.length) return `<div class="plain-text">${escHtml(text)}</div>`;
-
-  // Group by type
-  const groups = {};
-  for (const t of tags) { (groups[t.type] = groups[t.type] || []).push(t.val); }
-
-  let html = '';
-  for (const [type, vals] of Object.entries(groups)) {
-    html += `<div class="content-section">
-      <div class="section-title">${escHtml(type)} <span style="color:var(--muted);text-transform:none;font-weight:400;font-size:11px">(${vals.length})</span></div>
-      <div class="ioc-grid">
-        ${vals.map(v => `<span class="ioc-tag ${iocTagCls(type)}"><span class="type-dot"></span>${escHtml(v)}</span>`).join('')}
-      </div>
-    </div>`;
-  }
-  return html;
-}
-
-function guessIOCType(val) {
-  if (/^\\d{1,3}(\\.\\d{1,3}){3}(:\\d+)?$/.test(val)) return 'ip address';
-  if (val.endsWith('.onion')) return 'onion url';
-  if (/^[13][a-km-zA-HJ-NP-Z1-9]{25,34}$/.test(val) || /^bc1[a-z0-9]{6,87}$/.test(val)) return 'bitcoin address';
-  if (/@/.test(val)) return 'email';
-  if (/^https?:\\/\\/|^\\/\\//.test(val)) return 'url';
-  return 'other';
-}
-
-function iocTagCls(type) {
-  if (type.includes('ip'))      return 'ip';
-  if (type.includes('email'))   return 'email';
-  if (type.includes('bitcoin') || type.includes('btc') || type.includes('crypto')) return 'btc';
-  if (type.includes('onion'))   return 'onion';
-  if (type.includes('url') || type.includes('http')) return 'url';
-  return 'other';
-}
-
-function renderContacts(text) {
-  const lines = text.split('\\n').map(l => l.trim()).filter(Boolean);
-  if (!lines.length) return '<div class="empty-state">No contacts found.</div>';
-  let html = '<div class="content-section">';
-  for (const line of lines) {
-    if (line.startsWith('=') || line.startsWith('-')) continue;
-    if (/^[A-Z ]{4,40}$/.test(line)) {
-      html += `</div><div class="content-section"><div class="section-title">${escHtml(line)}</div>`;
-    } else {
-      html += `<div class="contact-item">${escHtml(line)}</div>`;
-    }
-  }
-  html += '</div>';
-  return html;
 }
 
 function escHtml(s) {
