@@ -198,7 +198,7 @@ def _record_success(key: str):
 # PROVIDER API CALLS
 # ============================================================
 
-def _call_gemini(prompt: str, api_key: str, stage: str = "summary", temperature: float = 0.3) -> str:
+def _call_gemini(prompt: str, api_key: str, stage: str = "summary", temperature: float = 0.1) -> str:
     """call gemini api with retry logic for rate limits and optional JSON mode"""
     model = PROVIDER_MODELS["gemini"]
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
@@ -248,7 +248,7 @@ def _call_gemini(prompt: str, api_key: str, stage: str = "summary", temperature:
     raise Exception("Gemini rate limit exceeded after all retries")
 
 
-def _call_anthropic(prompt: str, api_key: str, stage: str = "summary", temperature: float = 0.3) -> str:
+def _call_anthropic(prompt: str, api_key: str, stage: str = "summary", temperature: float = 0.1) -> str:
     """call anthropic messages API"""
     url = PROVIDER_URLS["anthropic"]
     model = PROVIDER_MODELS["anthropic"]
@@ -299,7 +299,7 @@ def _call_anthropic(prompt: str, api_key: str, stage: str = "summary", temperatu
     raise Exception("Anthropic rate limit exceeded after all retries")
 
 
-def _call_openai_compatible(prompt: str, api_key: str, provider: str, stage: str = "summary", temperature: float = 0.3) -> str:
+def _call_openai_compatible(prompt: str, api_key: str, provider: str, stage: str = "summary", temperature: float = 0.1) -> str:
     """call OpenAI-compatible API (used by DeepSeek, Groq, Mistral)"""
     url = PROVIDER_URLS[provider]
     model = PROVIDER_MODELS[provider]
@@ -352,17 +352,17 @@ def _call_openai_compatible(prompt: str, api_key: str, provider: str, stage: str
     raise Exception(f"{provider.title()} rate limit exceeded after all retries")
 
 
-def _call_deepseek(prompt: str, api_key: str, stage: str = "summary", temperature: float = 0.3) -> str:
+def _call_deepseek(prompt: str, api_key: str, stage: str = "summary", temperature: float = 0.1) -> str:
     """call DeepSeek API (OpenAI-compatible)"""
     return _call_openai_compatible(prompt, api_key, "deepseek", stage, temperature)
 
 
-def _call_groq(prompt: str, api_key: str, stage: str = "summary", temperature: float = 0.3) -> str:
+def _call_groq(prompt: str, api_key: str, stage: str = "summary", temperature: float = 0.1) -> str:
     """call Groq API (OpenAI-compatible)"""
     return _call_openai_compatible(prompt, api_key, "groq", stage, temperature)
 
 
-def _call_mistral(prompt: str, api_key: str, stage: str = "summary", temperature: float = 0.3) -> str:
+def _call_mistral(prompt: str, api_key: str, stage: str = "summary", temperature: float = 0.1) -> str:
     """call Mistral API (OpenAI-compatible)"""
     return _call_openai_compatible(prompt, api_key, "mistral", stage, temperature)
 
@@ -413,7 +413,7 @@ def _call_ollama(prompt: str, model: str) -> str:
         "prompt": prompt,
         "stream": False,
         "options": {
-            "temperature": 0.3,
+            "temperature": 0.1,
         }
     }
 
@@ -430,7 +430,7 @@ def _call_ollama(prompt: str, model: str) -> str:
 # UNIFIED LLM DISPATCHER
 # ============================================================
 
-def call_llm(prompt: str, stage: str, temperature: float = 0.3) -> str:
+def call_llm(prompt: str, stage: str, temperature: float = 0.1) -> str:
     """
     call the best available llm for a given stage.
     uses active provider, then falls back to ollama on failure.
