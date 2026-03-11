@@ -294,7 +294,7 @@ def load_urls(filename: str = "output/results.txt") -> list:
         return []
 
 
-async def scrape_all_async(urls: list, max_workers: int = 3, depth: int = 1, max_pages: int = 1) -> tuple:
+async def scrape_all_async(urls: list, max_workers: int = 3, depth: int = 1, max_pages: int = 1, check_abort: callable = None) -> tuple:
     """
     scrape urls with optional depth control and pagination.
     depth=1: landing page only (default, backward compatible)
@@ -322,7 +322,12 @@ async def scrape_all_async(urls: list, max_workers: int = 3, depth: int = 1, max
     html_cache = {}
     
     async def limited_scrape(url, stream_id):
+        if check_abort and check_abort():
+            raise InterruptedError("Aborted by user")
         async with semaphore:
+            if check_abort and check_abort():
+                raise InterruptedError("Aborted by user")
+            # pass check_abort down if possible, but scrape_url_paginated isn't wired for it so we just check at task level
             return await scrape_url_paginated(url, stream_id, max_pages=max_pages)
     
     # depth 1: scrape initial urls
@@ -344,8 +349,14 @@ async def scrape_all_async(urls: list, max_workers: int = 3, depth: int = 1, max
                 html_cache[url] = raw_html
             if depth > 1 and sublinks:
                 all_sublinks.extend(sublinks)
+        elif isinstance(result, InterruptedError):
+            print("\n  [!] Scraping aborted early. Saving partial results...")
+            break
         elif isinstance(result, Exception):
             results[urls[i]] = f"[ERROR: {str(result)[:100]}]"
+    
+    if check_abort and check_abort():
+        return results, html_cache
     
     # depth 2: follow sublinks (if depth > 1)
     if depth > 1 and all_sublinks:
@@ -378,9 +389,9 @@ async def scrape_all_async(urls: list, max_workers: int = 3, depth: int = 1, max
     return results, html_cache
 
 
-def scrape_all(urls: list, max_workers: int = 3, depth: int = 1, max_pages: int = 1) -> tuple:
+def scrape_all(urls: list, max_workers: int = 3, depth: int = 1, max_pages: int = 1, check_abort: callable = None) -> tuple:
     """returns (scraped_data, html_cache) tuple"""
-    return asyncio.run(scrape_all_async(urls, max_workers, depth, max_pages=max_pages))
+    return asyncio.run(scrape_all_async(urls, max_workers, depth, max_pages=max_pages, check_abort=check_abort))
 
 
 def save_scraped_data(results: dict, filename: str = "output/scraped_data.txt"):

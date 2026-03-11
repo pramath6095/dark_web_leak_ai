@@ -1,6 +1,7 @@
 import os
 import json
 import time
+import threading
 import requests
 from dotenv import load_dotenv
 load_dotenv()
@@ -46,6 +47,9 @@ PROVIDER_URLS = {
 }
 
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+
+# user-selected ollama model (None = auto-pick first available)
+_active_ollama_model = os.getenv("OLLAMA_MODEL", "").strip() or None
 
 # load all provider keys: {provider: {stage: key_value}}
 _PROVIDER_KEYS = {}
@@ -101,6 +105,32 @@ def set_provider(name: str):
 def get_provider() -> str:
     """get the currently active provider"""
     return _active_provider
+
+
+def set_ollama_model(model_name: str):
+    """set the ollama model to use (called by dashboard per-job)"""
+    global _active_ollama_model
+    model_name = model_name.strip() if model_name else None
+    _active_ollama_model = model_name or None
+    if _active_ollama_model:
+        print(f"  [*] Ollama model set to: {_active_ollama_model}")
+
+
+def get_ollama_model_name() -> str:
+    """get the currently selected ollama model name"""
+    return _active_ollama_model
+
+
+def list_ollama_models() -> list:
+    """list all models available in the local ollama instance"""
+    try:
+        r = requests.get(f"{OLLAMA_BASE_URL}/api/tags", timeout=5)
+        if r.status_code == 200:
+            models = r.json().get("models", [])
+            return [m.get("name", "") for m in models if m.get("name")]
+    except Exception:
+        pass
+    return []
 
 
 def _get_provider_key(provider: str, stage: str) -> str:
@@ -169,7 +199,7 @@ def _record_success(key: str):
 # PROVIDER API CALLS
 # ============================================================
 
-def _call_gemini(prompt: str, api_key: str, stage: str = "summary", temperature: float = 0.3) -> str:
+def _call_gemini(prompt: str, api_key: str, stage: str = "summary", temperature: float = 0.1) -> str:
     """call gemini api with retry logic for rate limits and optional JSON mode"""
     model = PROVIDER_MODELS["gemini"]
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
@@ -219,7 +249,7 @@ def _call_gemini(prompt: str, api_key: str, stage: str = "summary", temperature:
     raise Exception("Gemini rate limit exceeded after all retries")
 
 
-def _call_anthropic(prompt: str, api_key: str, stage: str = "summary", temperature: float = 0.3) -> str:
+def _call_anthropic(prompt: str, api_key: str, stage: str = "summary", temperature: float = 0.1) -> str:
     """call anthropic messages API"""
     url = PROVIDER_URLS["anthropic"]
     model = PROVIDER_MODELS["anthropic"]
@@ -270,7 +300,7 @@ def _call_anthropic(prompt: str, api_key: str, stage: str = "summary", temperatu
     raise Exception("Anthropic rate limit exceeded after all retries")
 
 
-def _call_openai_compatible(prompt: str, api_key: str, provider: str, stage: str = "summary", temperature: float = 0.3) -> str:
+def _call_openai_compatible(prompt: str, api_key: str, provider: str, stage: str = "summary", temperature: float = 0.1) -> str:
     """call OpenAI-compatible API (used by DeepSeek, Groq, Mistral)"""
     url = PROVIDER_URLS[provider]
     model = PROVIDER_MODELS[provider]
@@ -323,17 +353,17 @@ def _call_openai_compatible(prompt: str, api_key: str, provider: str, stage: str
     raise Exception(f"{provider.title()} rate limit exceeded after all retries")
 
 
-def _call_deepseek(prompt: str, api_key: str, stage: str = "summary", temperature: float = 0.3) -> str:
+def _call_deepseek(prompt: str, api_key: str, stage: str = "summary", temperature: float = 0.1) -> str:
     """call DeepSeek API (OpenAI-compatible)"""
     return _call_openai_compatible(prompt, api_key, "deepseek", stage, temperature)
 
 
-def _call_groq(prompt: str, api_key: str, stage: str = "summary", temperature: float = 0.3) -> str:
+def _call_groq(prompt: str, api_key: str, stage: str = "summary", temperature: float = 0.1) -> str:
     """call Groq API (OpenAI-compatible)"""
     return _call_openai_compatible(prompt, api_key, "groq", stage, temperature)
 
 
-def _call_mistral(prompt: str, api_key: str, stage: str = "summary", temperature: float = 0.3) -> str:
+def _call_mistral(prompt: str, api_key: str, stage: str = "summary", temperature: float = 0.1) -> str:
     """call Mistral API (OpenAI-compatible)"""
     return _call_openai_compatible(prompt, api_key, "mistral", stage, temperature)
 
@@ -362,7 +392,9 @@ def _ollama_available() -> bool:
 
 
 def _get_ollama_model() -> str:
-    """get first available ollama model"""
+    """get user-selected ollama model, or first available if none set"""
+    if _active_ollama_model:
+        return _active_ollama_model
     try:
         r = requests.get(f"{OLLAMA_BASE_URL}/api/tags", timeout=3)
         models = r.json().get("models", [])
@@ -373,8 +405,12 @@ def _get_ollama_model() -> str:
     return None
 
 
+# lock to serialise Ollama requests (local models handle one request at a time)
+_ollama_lock = threading.Lock()
+
+
 def _call_ollama(prompt: str, model: str) -> str:
-    """call ollama api for local model inference"""
+    """call ollama api for local model inference (serialised via lock)"""
     url = f"{OLLAMA_BASE_URL}/api/generate"
 
     payload = {
@@ -382,24 +418,25 @@ def _call_ollama(prompt: str, model: str) -> str:
         "prompt": prompt,
         "stream": False,
         "options": {
-            "temperature": 0.3,
+            "temperature": 0.1,
         }
     }
 
-    try:
-        response = requests.post(url, json=payload, timeout=120)
-        response.raise_for_status()
-        return response.json().get("response", "")
-    except Exception as e:
-        print(f"  [!] Ollama request failed: {str(e)[:80]}")
-        raise
+    with _ollama_lock:
+        try:
+            response = requests.post(url, json=payload, timeout=600)
+            response.raise_for_status()
+            return response.json().get("response", "")
+        except Exception as e:
+            print(f"  [!] Ollama request failed: {str(e)[:80]}")
+            raise
 
 
 # ============================================================
 # UNIFIED LLM DISPATCHER
 # ============================================================
 
-def call_llm(prompt: str, stage: str, temperature: float = 0.3) -> str:
+def call_llm(prompt: str, stage: str, temperature: float = 0.1) -> str:
     """
     call the best available llm for a given stage.
     uses active provider, then falls back to ollama on failure.
@@ -481,12 +518,15 @@ def refine_query(query: str) -> list:
     returns list of keyword strings targeting real threat data.
     """
     prompt = f"""You are a Dark Web Threat Intelligence Analyst. Generate search queries for dark web search engines related to the provided input.
+Logic:
+- If the input is a target (company/person/domain), include the target in every query.
+- If the input is a threat keyword (ransomware, malware, stealer, botnet), expand it with realistic dark web context instead of forcing unrelated terms.
 Rules:
 - Generate exactly 5 queries, one per line.
-- Each query must be 1–3 words and include the original target name.
-- Each query must target a different threat surface: breach/leak, ransomware/extortion, credential exposure, forum/market activity, paste/database dump.
-- Use realistic dark web terminology (breach, leak, ransomware, credentials, combolist, stealer logs, selling, access, dump, paste).
-No logical operators, numbering, quotes, or explanations.
+- Each query must be 1–3 words.
+- Use realistic dark web terminology (breach, leak, credentials, combolist, stealer logs, access, selling, dump, paste, panel, builder).
+- Queries must represent different dark web contexts such as breach/leak, credentials, marketplace activity, malware distribution, or data dumps.
+- No logical operators, numbering, quotes, or explanations.
 INPUT: {query}"""
 
     result = call_llm(prompt, "refine")
