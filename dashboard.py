@@ -47,8 +47,10 @@ def _run_pipeline(job_id: str, query: str, config: dict):
 
         # set the AI provider for this job
         if use_ai:
-            from ai_engine import set_provider
+            from ai_engine import set_provider, set_ollama_model
             set_provider(ai_provider)
+            if ai_provider == "ollama":
+                set_ollama_model(config.get("ollama_model", ""))
 
         with _job_lock:
             _jobs[job_id]["progress"] = "searching"
@@ -365,7 +367,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       <div class="row">
         <div>
           <label>AI Provider</label>
-          <select id="provider">
+          <select id="provider" onchange="onProviderChange()">
             <option value="gemini">Gemini (default)</option>
             <option value="ollama">Ollama (Local)</option>
             <option value="anthropic">Anthropic</option>
@@ -374,7 +376,12 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             <option value="mistral">Mistral</option>
           </select>
         </div>
-        <div></div>
+        <div id="ollama-model-wrapper" style="display:none">
+          <label>Ollama Model</label>
+          <select id="ollama-model">
+            <option value="">Loading models…</option>
+          </select>
+        </div>
         <div></div>
       </div>
       <button type="submit" id="run-btn" class="btn btn-primary">▶ Run Pipeline</button>
@@ -438,6 +445,7 @@ form.addEventListener('submit', async (e) => {
     max_pages:    parseInt(document.getElementById('pages').value),
     use_ai:       document.getElementById('ai').value === '1',
     ai_provider:  document.getElementById('provider').value,
+    ollama_model: document.getElementById('ollama-model').value,
   };
   const res  = await fetch('/run', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) });
   const data = await res.json();
@@ -572,6 +580,34 @@ function escHtml(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
+// ── Ollama model selector ─────────────────────────────────
+async function onProviderChange() {
+  const provider = document.getElementById('provider').value;
+  const wrapper = document.getElementById('ollama-model-wrapper');
+  if (provider === 'ollama') {
+    wrapper.style.display = '';
+    await loadOllamaModels();
+  } else {
+    wrapper.style.display = 'none';
+  }
+}
+
+async function loadOllamaModels() {
+  const sel = document.getElementById('ollama-model');
+  sel.innerHTML = '<option value="">Loading…</option>';
+  try {
+    const res = await fetch('/ollama/models');
+    const data = await res.json();
+    if (data.models && data.models.length) {
+      sel.innerHTML = data.models.map(m => `<option value="${escHtml(m)}">${escHtml(m)}</option>`).join('');
+    } else {
+      sel.innerHTML = '<option value="">No models found</option>';
+    }
+  } catch {
+    sel.innerHTML = '<option value="">Failed to load</option>';
+  }
+}
+
 // Load files on page open
 loadFiles();
 </script>
@@ -599,6 +635,7 @@ def run_pipeline():
     config = {
         "use_ai":        data.get("use_ai", True),
         "ai_provider":   data.get("ai_provider", "gemini"),
+        "ollama_model":  data.get("ollama_model", ""),
         "num_engines":   data.get("num_engines", 17),
         "scrape_limit":  data.get("scrape_limit", 10),
         "threads":       data.get("threads", 3),
@@ -655,6 +692,14 @@ def get_result(filename):
     with open(path, "r", encoding="utf-8") as f:
         content = f.read()
     return Response(content, mimetype="text/plain")
+
+
+@app.route("/ollama/models")
+def ollama_models():
+    """return available ollama models for the dropdown"""
+    from ai_engine import list_ollama_models
+    models = list_ollama_models()
+    return jsonify({"models": models})
 
 
 if __name__ == "__main__":

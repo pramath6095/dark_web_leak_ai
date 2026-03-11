@@ -47,6 +47,9 @@ PROVIDER_URLS = {
 
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 
+# user-selected ollama model (None = auto-pick first available)
+_active_ollama_model = os.getenv("OLLAMA_MODEL", "").strip() or None
+
 # load all provider keys: {provider: {stage: key_value}}
 _PROVIDER_KEYS = {}
 for _prov, _prefix in _PROVIDER_PREFIX.items():
@@ -101,6 +104,32 @@ def set_provider(name: str):
 def get_provider() -> str:
     """get the currently active provider"""
     return _active_provider
+
+
+def set_ollama_model(model_name: str):
+    """set the ollama model to use (called by dashboard per-job)"""
+    global _active_ollama_model
+    model_name = model_name.strip() if model_name else None
+    _active_ollama_model = model_name or None
+    if _active_ollama_model:
+        print(f"  [*] Ollama model set to: {_active_ollama_model}")
+
+
+def get_ollama_model_name() -> str:
+    """get the currently selected ollama model name"""
+    return _active_ollama_model
+
+
+def list_ollama_models() -> list:
+    """list all models available in the local ollama instance"""
+    try:
+        r = requests.get(f"{OLLAMA_BASE_URL}/api/tags", timeout=5)
+        if r.status_code == 200:
+            models = r.json().get("models", [])
+            return [m.get("name", "") for m in models if m.get("name")]
+    except Exception:
+        pass
+    return []
 
 
 def _get_provider_key(provider: str, stage: str) -> str:
@@ -362,7 +391,9 @@ def _ollama_available() -> bool:
 
 
 def _get_ollama_model() -> str:
-    """get first available ollama model"""
+    """get user-selected ollama model, or first available if none set"""
+    if _active_ollama_model:
+        return _active_ollama_model
     try:
         r = requests.get(f"{OLLAMA_BASE_URL}/api/tags", timeout=3)
         models = r.json().get("models", [])
