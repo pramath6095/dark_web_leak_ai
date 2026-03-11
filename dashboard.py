@@ -351,12 +351,50 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .markdown-body pre code { background: none; padding: 0; border: none; }
   .markdown-body table { width: 100%; border-collapse: collapse; margin-bottom: 16px; display: block; overflow-x: auto; }
   .markdown-body th, .markdown-body td { border: 1px solid var(--border); padding: 10px 14px; text-align: left; white-space: normal; word-break: break-word; }
-  .markdown-body th { background: rgba(255,255,255,0.05); color: white; font-weight: 600; }
+  .markdown-body th { background: rgba(255,255,255,0.05); color: white; font-weight: 600; position: sticky; top: 0; z-index: 1; }
   .markdown-body tr:nth-child(even) { background: rgba(255,255,255,0.02); }
+  .markdown-body tr:hover { background: rgba(0,200,255,0.03); }
   .markdown-body hr { border: none; border-top: 1px solid var(--border); margin: 24px 0; }
   .markdown-body a { color: var(--accent); text-decoration: none; }
   .markdown-body a:hover { text-decoration: underline; }
-  .markdown-body blockquote { border-left: 4px solid var(--accent); padding-left: 16px; color: var(--muted); margin-bottom: 16px; }
+  .markdown-body blockquote { border-left: 3px solid rgba(0,200,255,0.4); padding: 8px 16px; color: var(--muted); margin: 0 0 16px; background: rgba(0,200,255,0.03); border-radius: 0 6px 6px 0; font-size: 13px; }
+
+  /* ── IOC TABLE SCROLL CONTAINER ── */
+  .ioc-scroll {
+    max-height: 340px; overflow-y: auto; overflow-x: hidden;
+    border: 1px solid var(--border); border-radius: 10px;
+    margin-bottom: 4px; background: rgba(0,0,0,0.15);
+  }
+  .ioc-scroll table { margin-bottom: 0; }
+  .ioc-scroll::-webkit-scrollbar { width: 5px; }
+  .ioc-scroll::-webkit-scrollbar-track { background: transparent; }
+  .ioc-scroll::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 5px; }
+  .ioc-scroll::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.2); }
+
+  /* ── COPY BUTTON ── */
+  .cp-btn {
+    display: inline-flex; align-items: center; gap: 3px;
+    margin-left: 8px; padding: 2px 7px; border: none;
+    background: rgba(255,255,255,0.06); color: var(--muted);
+    border-radius: 4px; cursor: pointer; font-size: 11px;
+    font-family: var(--mono); vertical-align: middle;
+    transition: all 0.15s ease; opacity: 0.5;
+  }
+  tr:hover .cp-btn { opacity: 1; }
+  .cp-btn:hover { background: rgba(0,200,255,0.12); color: var(--accent); }
+  .cp-btn.ok { background: rgba(16,185,129,0.15); color: var(--success); opacity: 1; }
+
+  /* ── SHOW MORE / LESS ── */
+  .show-toggle {
+    display: block; width: 100%; padding: 7px 0;
+    margin: 0 0 16px; border: 1px solid rgba(255,255,255,0.06);
+    background: linear-gradient(135deg, rgba(0,200,255,0.04), rgba(124,58,237,0.04));
+    color: var(--muted); border-radius: 8px;
+    cursor: pointer; font-size: 12px; font-weight: 500;
+    font-family: 'Inter', sans-serif; letter-spacing: 0.02em;
+    transition: all 0.2s ease;
+  }
+  .show-toggle:hover { color: var(--accent); border-color: rgba(0,200,255,0.2); background: rgba(0,200,255,0.06); }
 </style>
 </head>
 <body>
@@ -623,6 +661,8 @@ async function openFile(name, cls, icon) {
 
   const text = await fetch('/results/' + name).then(r => r.text());
   document.getElementById('modal-body').innerHTML = renderContent(name, cls, text);
+  // post-process IOC tables after DOM is updated
+  requestAnimationFrame(() => enhanceIOCView(document.getElementById('modal-body')));
 }
 
 function closeModal() {
@@ -636,7 +676,6 @@ document.getElementById('modal-overlay').addEventListener('click', function(e) {
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
 
 function renderContent(name, cls, text) {
-  // All output files are now markdown — render through marked
   if (typeof marked !== 'undefined') {
     return `<div class="markdown-body" style="background: var(--surface2); border: 1px solid var(--border); border-radius: 10px; padding: 24px; max-height: 80vh; overflow-y: auto;">${marked.parse(text)}</div>`;
   }
@@ -645,6 +684,55 @@ function renderContent(name, cls, text) {
 
 function escHtml(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ── IOC post-processing ─────────────────────────────────────
+function enhanceIOCView(root) {
+  if (!root) return;
+
+  // 1) Copy buttons on every <code> inside td
+  root.querySelectorAll('td code').forEach(code => {
+    if (code.parentNode.querySelector('.cp-btn')) return;
+    const b = document.createElement('button');
+    b.className = 'cp-btn'; b.textContent = 'copy';
+    b.onclick = () => {
+      navigator.clipboard.writeText(code.textContent).then(() => {
+        b.textContent = '✓ copied'; b.classList.add('ok');
+        setTimeout(() => { b.textContent = 'copy'; b.classList.remove('ok'); }, 1400);
+      });
+    };
+    code.after(b);
+  });
+
+  // 2) Scrollable + collapsible tables
+  root.querySelectorAll('.markdown-body table').forEach(tbl => {
+    if (tbl.closest('.ioc-scroll')) return; // already wrapped
+    const body = tbl.querySelector('tbody') || tbl;
+    const rows = Array.from(body.querySelectorAll('tr')).filter(r => !r.querySelector('th'));
+    if (rows.length <= 5) return; // small table, leave as-is
+
+    // wrap in scrollable container
+    const wrap = document.createElement('div');
+    wrap.className = 'ioc-scroll';
+    tbl.parentNode.insertBefore(wrap, tbl);
+    wrap.appendChild(tbl);
+
+    if (rows.length > 10) {
+      // collapse rows > 10
+      rows.forEach((r, i) => { if (i >= 10) r.style.display = 'none'; });
+      const btn = document.createElement('button');
+      btn.className = 'show-toggle';
+      btn.textContent = '▾  Show ' + (rows.length - 10) + ' more items';
+      let open = false;
+      btn.onclick = () => {
+        open = !open;
+        rows.forEach((r, i) => { if (i >= 10) r.style.display = open ? '' : 'none'; });
+        btn.textContent = open ? '▴  Show less' : '▾  Show ' + (rows.length - 10) + ' more items';
+        wrap.style.maxHeight = open ? 'none' : '340px';
+      };
+      wrap.after(btn);
+    }
+  });
 }
 
 // ── Ollama model selector ─────────────────────────────────

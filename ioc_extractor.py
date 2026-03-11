@@ -592,6 +592,23 @@ def extract_contacts_from_scraped(scraped_data: dict) -> dict:
     return all_contacts
 
 
+def _onion_url_label(url: str) -> str:
+    """convert a long onion URL into a short readable label."""
+    try:
+        parsed = urlparse(url)
+        path = parsed.path.strip("/")
+        if path:
+            segments = [s for s in path.split("/") if s]
+            label = " – ".join(segments[-2:]) if len(segments) >= 2 else segments[-1]
+            return label.replace("-", " ").replace("_", " ").title()
+        host = parsed.hostname or ""
+        if host.endswith(".onion") and len(host) > 20:
+            return host[:12] + "….onion"
+        return host
+    except Exception:
+        return url[:40] + "…" if len(url) > 40 else url
+
+
 def format_iocs_summary(all_iocs: dict, all_contacts: dict = None) -> str:
     """format extracted IOCs and contacts into a combined markdown summary,
     grouped by source URL so all IOCs from the same page appear together."""
@@ -620,32 +637,37 @@ def format_iocs_summary(all_iocs: dict, all_contacts: dict = None) -> str:
         "ssn": "SSN-like Patterns",
     }
 
+    # user-specified importance order:
+    # Credential Pairs → Crypto Wallets → Emails → Telegram Users → Hashes → IP Addresses → Domains → URLs
     ioc_display_order = [
-        "credential_pair", "email", "credit_card", "ssn", "telegram_user",
-        "btc_wallet", "eth_wallet", "xmr_wallet", "ltc_wallet", "ipv4",
-        "domain", "phone", "md5_hash", "sha256_hash", "url",
+        "credential_pair", "credit_card", "ssn",
+        "btc_wallet", "eth_wallet", "xmr_wallet", "ltc_wallet",
+        "email",
+        "telegram_user",
+        "md5_hash", "sha256_hash",
+        "ipv4", "phone",
+        "domain",
+        "url",
     ]
 
-    # ── aggregate totals for overview ──
+    # ── aggregate totals ──
     totals = {}
     for url, iocs in (all_iocs or {}).items():
         for ioc_type, values in iocs.items():
             totals[ioc_type] = totals.get(ioc_type, 0) + len(values)
 
-    # overview table
-    overview_rows = []
-    for ioc_type in ioc_display_order:
-        if ioc_type in totals:
-            label = labels.get(ioc_type, ioc_type)
-            overview_rows.append(f"| {label} | {totals[ioc_type]} |")
+    grand_total = sum(totals.values())
 
-    if overview_rows:
-        lines.append("### Overview")
-        lines.append(f"**{len(all_iocs or {})} sources** scanned")
+    # ── top IOC summary ──
+    if totals:
+        lines.append("### IOC Summary")
         lines.append("")
-        lines.append("| Category | Count |")
-        lines.append("|---|---|")
-        lines.extend(overview_rows)
+        lines.append(f"**Total Indicators: {grand_total}** · **{len(all_iocs or {})} sources** scanned")
+        lines.append("")
+        for ioc_type in ioc_display_order:
+            if ioc_type in totals:
+                label = labels.get(ioc_type, ioc_type)
+                lines.append(f"- **{label}**: {totals[ioc_type]}")
         lines.append("")
 
     # ── IOCs grouped by source URL ──
@@ -653,7 +675,6 @@ def format_iocs_summary(all_iocs: dict, all_contacts: dict = None) -> str:
         lines.append("---")
         lines.append("")
 
-        # sort sources by total IOC count (richest first)
         sorted_sources = sorted(
             all_iocs.items(),
             key=lambda x: sum(len(v) for v in x[1].values()),
@@ -662,8 +683,20 @@ def format_iocs_summary(all_iocs: dict, all_contacts: dict = None) -> str:
 
         for url, iocs in sorted_sources:
             total = sum(len(v) for v in iocs.values())
-            lines.append(f"### Source: {url}")
-            lines.append(f"*{total} indicator(s) found*")
+
+            if ".onion" in url:
+                label = _onion_url_label(url)
+                lines.append(f'### <a href="{url}" title="{url}">{label}</a> ({total} indicators)')
+            else:
+                lines.append(f"### Source: {url} ({total} indicators)")
+
+            # per-source type summary
+            type_parts = []
+            for ioc_type in ioc_display_order:
+                if ioc_type in iocs:
+                    type_parts.append(f"{labels.get(ioc_type, ioc_type)}: {len(iocs[ioc_type])}")
+            if type_parts:
+                lines.append("> " + " · ".join(type_parts))
             lines.append("")
 
             for ioc_type in ioc_display_order:
@@ -750,6 +783,7 @@ def format_iocs_summary(all_iocs: dict, all_contacts: dict = None) -> str:
                     lines.append("")
 
     return "\n".join(lines)
+
 
 
 
