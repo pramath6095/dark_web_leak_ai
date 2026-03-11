@@ -593,9 +593,163 @@ def extract_contacts_from_scraped(scraped_data: dict) -> dict:
 
 
 def format_iocs_summary(all_iocs: dict, all_contacts: dict = None) -> str:
-    """format extracted IOCs and contacts into a combined markdown summary"""
+    """format extracted IOCs and contacts into a combined markdown summary,
+    grouped by source URL so all IOCs from the same page appear together."""
     if not all_iocs and not all_contacts:
         return "No IOCs or contacts extracted."
+
+    lines = []
+    lines.append("## Indicators of Compromise (Auto-Extracted)")
+    lines.append("")
+
+    labels = {
+        "email": "Email Addresses",
+        "credential_pair": "Credential Pairs",
+        "ipv4": "IP Addresses",
+        "domain": "Domains",
+        "url": "URLs",
+        "telegram_user": "Telegram Users",
+        "btc_wallet": "Bitcoin Wallets",
+        "eth_wallet": "Ethereum Wallets",
+        "xmr_wallet": "Monero Wallets",
+        "ltc_wallet": "Litecoin Wallets",
+        "md5_hash": "MD5 Hashes",
+        "sha256_hash": "SHA-256 Hashes",
+        "phone": "Phone Numbers",
+        "credit_card": "Credit Card Numbers",
+        "ssn": "SSN-like Patterns",
+    }
+
+    ioc_display_order = [
+        "credential_pair", "email", "credit_card", "ssn", "telegram_user",
+        "btc_wallet", "eth_wallet", "xmr_wallet", "ltc_wallet", "ipv4",
+        "domain", "phone", "md5_hash", "sha256_hash", "url",
+    ]
+
+    # ── aggregate totals for overview ──
+    totals = {}
+    for url, iocs in (all_iocs or {}).items():
+        for ioc_type, values in iocs.items():
+            totals[ioc_type] = totals.get(ioc_type, 0) + len(values)
+
+    # overview table
+    overview_rows = []
+    for ioc_type in ioc_display_order:
+        if ioc_type in totals:
+            label = labels.get(ioc_type, ioc_type)
+            overview_rows.append(f"| {label} | {totals[ioc_type]} |")
+
+    if overview_rows:
+        lines.append("### Overview")
+        lines.append(f"**{len(all_iocs or {})} sources** scanned")
+        lines.append("")
+        lines.append("| Category | Count |")
+        lines.append("|---|---|")
+        lines.extend(overview_rows)
+        lines.append("")
+
+    # ── IOCs grouped by source URL ──
+    if all_iocs:
+        lines.append("---")
+        lines.append("")
+
+        # sort sources by total IOC count (richest first)
+        sorted_sources = sorted(
+            all_iocs.items(),
+            key=lambda x: sum(len(v) for v in x[1].values()),
+            reverse=True
+        )
+
+        for url, iocs in sorted_sources:
+            total = sum(len(v) for v in iocs.values())
+            lines.append(f"### Source: {url}")
+            lines.append(f"*{total} indicator(s) found*")
+            lines.append("")
+
+            for ioc_type in ioc_display_order:
+                if ioc_type not in iocs:
+                    continue
+                values = iocs[ioc_type]
+                label = labels.get(ioc_type, ioc_type)
+
+                if len(values) <= 8:
+                    val_list = ", ".join(f"`{v}`" for v in sorted(values))
+                    lines.append(f"- **{label}** ({len(values)}): {val_list}")
+                else:
+                    lines.append(f"- **{label}** ({len(values)}):")
+                    lines.append("")
+                    lines.append("| Value |")
+                    lines.append("|---|")
+                    for v in sorted(values):
+                        lines.append(f"| `{v.replace(chr(124), chr(92) + chr(124))}` |")
+                    lines.append("")
+
+            lines.append("")
+
+    # ── threat actor contacts section ──
+    if all_contacts:
+        contact_agg = {}
+        for url, contacts in all_contacts.items():
+            for contact_type, items in contacts.items():
+                if contact_type not in contact_agg:
+                    contact_agg[contact_type] = {}
+                for item in items:
+                    val = item["value"] if isinstance(item, dict) else item
+                    ctx = item.get("context", "") if isinstance(item, dict) else ""
+                    if val not in contact_agg[contact_type]:
+                        contact_agg[contact_type][val] = {"contexts": [], "sources": []}
+                    if ctx and ctx not in contact_agg[contact_type][val]["contexts"]:
+                        contact_agg[contact_type][val]["contexts"].append(ctx)
+                    if url not in contact_agg[contact_type][val]["sources"]:
+                        contact_agg[contact_type][val]["sources"].append(url)
+
+        if contact_agg:
+            contact_labels = {
+                "telegram": "Telegram", "wickr": "Wickr", "signal": "Signal",
+                "session": "Session", "jabber_xmpp": "Jabber/XMPP",
+                "discord": "Discord", "matrix": "Matrix", "keybase": "Keybase",
+                "whatsapp": "WhatsApp", "element_riot": "Element/Riot",
+                "threema": "Threema", "briar": "Briar", "simplex": "SimpleX",
+                "tox_id": "TOX ID", "pgp_fingerprint": "PGP Fingerprint",
+                "pgp_keyid": "PGP Key ID", "protonmail": "ProtonMail",
+                "tutanota": "Tutanota/Tuta", "onionmail": "OnionMail/DNMX",
+                "cock_li": "cock.li", "forum_handle": "Forum Handle",
+                "onion_contact": "Onion Contact Page", "icq": "ICQ", "skype": "Skype",
+            }
+
+            contact_order = [
+                "telegram", "jabber_xmpp", "wickr", "session", "signal", "tox_id",
+                "discord", "matrix", "keybase", "whatsapp", "element_riot",
+                "threema", "briar", "simplex", "icq", "skype",
+                "protonmail", "tutanota", "onionmail", "cock_li",
+                "pgp_fingerprint", "pgp_keyid", "forum_handle", "onion_contact",
+            ]
+
+            lines.append("---")
+            lines.append("## Threat Actor Contacts")
+            lines.append("")
+
+            for ct in contact_order:
+                if ct in contact_agg:
+                    label = contact_labels.get(ct, ct)
+                    items = contact_agg[ct]
+                    lines.append(f"#### {label} ({len(items)} found)")
+                    lines.append("")
+                    lines.append("| Contact | Context | Source(s) |")
+                    lines.append("|---|---|---|")
+                    for val, data in sorted(items.items()):
+                        val_escaped = val.replace("|", "\\|")
+                        ctx = ""
+                        if data["contexts"]:
+                            best_ctx = min(data["contexts"], key=len)
+                            if len(best_ctx) > 100:
+                                best_ctx = best_ctx[:100] + "..."
+                            ctx = best_ctx.replace("|", "\\|").replace("\n", " ")
+                        src_count = f"{len(data['sources'])} page(s)"
+                        lines.append(f"| `{val_escaped}` | {ctx} | {src_count} |")
+                    lines.append("")
+
+    return "\n".join(lines)
 
     lines = []
     lines.append("## Indicators of Compromise (Auto-Extracted)")
