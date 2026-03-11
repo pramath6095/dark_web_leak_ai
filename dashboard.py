@@ -76,9 +76,9 @@ def _run_pipeline(job_id: str, query: str, config: dict):
         with _job_lock:
             _jobs[job_id]["progress"] = "filtering"
 
-        if use_ai and len(all_results) > 20:
+        if use_ai and len(all_results) > scrape_limit:
             from ai_engine import filter_results
-            all_results = filter_results(query, all_results)
+            all_results = filter_results(query, all_results, limit=scrape_limit)
 
         urls = [r["url"] if isinstance(r, dict) else r for r in all_results]
         urls_to_scrape = urls[:scrape_limit]

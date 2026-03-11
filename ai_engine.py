@@ -512,12 +512,15 @@ def refine_query(query: str) -> list:
     returns list of keyword strings targeting real threat data.
     """
     prompt = f"""You are a Dark Web Threat Intelligence Analyst. Generate search queries for dark web search engines related to the provided input.
+Logic:
+- If the input is a target (company/person/domain), include the target in every query.
+- If the input is a threat keyword (ransomware, malware, stealer, botnet), expand it with realistic dark web context instead of forcing unrelated terms.
 Rules:
 - Generate exactly 5 queries, one per line.
-- Each query must be 1–3 words and include the original target name.
-- Each query must target a different threat surface: breach/leak, ransomware/extortion, credential exposure, forum/market activity, paste/database dump.
-- Use realistic dark web terminology (breach, leak, ransomware, credentials, combolist, stealer logs, selling, access, dump, paste).
-No logical operators, numbering, quotes, or explanations.
+- Each query must be 1–3 words.
+- Use realistic dark web terminology (breach, leak, credentials, combolist, stealer logs, access, selling, dump, paste, panel, builder).
+- Queries must represent different dark web contexts such as breach/leak, credentials, marketplace activity, malware distribution, or data dumps.
+- No logical operators, numbering, quotes, or explanations.
 INPUT: {query}"""
 
     result = call_llm(prompt, "refine")
