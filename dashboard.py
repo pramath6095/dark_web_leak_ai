@@ -41,7 +41,7 @@ def _run_pipeline(job_id: str, query: str, config: dict):
     try:
         from search import search_dark_web, save_results, get_urls_from_results
         from scrape import scrape_all, save_scraped_data
-        from ioc_extractor import extract_iocs_from_scraped, extract_contacts_from_scraped, format_iocs_summary, format_contacts_summary
+        from ioc_extractor import extract_iocs_from_scraped, extract_contacts_from_scraped, format_iocs_summary
 
         use_ai = config.get("use_ai", True)
         ai_provider = config.get("ai_provider", "gemini")
@@ -107,17 +107,11 @@ def _run_pipeline(job_id: str, query: str, config: dict):
         all_iocs = extract_iocs_from_scraped(scraped_data)
         all_contacts = extract_contacts_from_scraped(scraped_data)
 
-        if all_iocs:
-            ioc_text = format_iocs_summary(all_iocs)
+        if all_iocs or all_contacts:
+            ioc_text = format_iocs_summary(all_iocs, all_contacts)
             os.makedirs("output", exist_ok=True)
             with open("output/iocs.txt", "w", encoding="utf-8") as f:
                 f.write(ioc_text)
-
-        if all_contacts:
-            contacts_text = format_contacts_summary(all_contacts)
-            os.makedirs("output", exist_ok=True)
-            with open("output/contacts.txt", "w", encoding="utf-8") as f:
-                f.write(contacts_text)
 
         summary = ""
         if use_ai:
@@ -297,7 +291,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .modal-overlay.open { display: flex; }
   .modal {
     background: var(--surface); border: 1px solid var(--border); border-radius: 16px;
-    width: 100%; max-width: 1000px; max-height: 90vh; display: flex; flex-direction: column;
+    width: 100%; max-width: 1400px; max-height: 95vh; display: flex; flex-direction: column;
     box-shadow: 0 24px 80px rgba(0,0,0,0.5);
   }
   .modal-header {
@@ -340,7 +334,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   @keyframes spin { to { transform: rotate(360deg); } }
 
   /* MARKDOWN STYLES */
-  .markdown-body { font-size: 14px; line-height: 1.6; color: #cbd5e1; font-family: 'Inter', sans-serif; max-height: 60vh; overflow-y: auto; padding-right: 12px; }
+  .markdown-body { font-size: 14px; line-height: 1.6; color: #cbd5e1; font-family: 'Inter', sans-serif; max-height: 80vh; overflow-y: auto; padding-right: 12px; }
   .markdown-body::-webkit-scrollbar { width: 8px; height: 8px; }
   .markdown-body::-webkit-scrollbar-track { background: rgba(0,0,0,0.1); border-radius: 4px; }
   .markdown-body::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 4px; }
@@ -644,9 +638,9 @@ document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal()
 function renderContent(name, cls, text) {
   // All output files are now markdown — render through marked
   if (typeof marked !== 'undefined') {
-    return `<div class="markdown-body" style="background: var(--surface2); border: 1px solid var(--border); border-radius: 10px; padding: 24px; max-height: 60vh; overflow-y: auto;">${marked.parse(text)}</div>`;
+    return `<div class="markdown-body" style="background: var(--surface2); border: 1px solid var(--border); border-radius: 10px; padding: 24px; max-height: 80vh; overflow-y: auto;">${marked.parse(text)}</div>`;
   }
-  return `<div class="plain-text" style="white-space: pre-wrap; max-height: 60vh; overflow-y: auto;">${escHtml(text)}</div>`;
+  return `<div class="plain-text" style="white-space: pre-wrap; max-height: 80vh; overflow-y: auto;">${escHtml(text)}</div>`;
 }
 
 function escHtml(s) {

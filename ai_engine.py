@@ -631,12 +631,7 @@ def _parse_classification_json(result: str) -> list:
 
 
 def classify_threats(query: str, scraped_data: dict) -> dict:
-    """
-    stage 3: classify each scraped page into threat categories with severity.
-    processes in batches of 6 to prevent JSON truncation.
-    uses cleaned content for better signal.
-    returns dict of url -> {category, severity, reason, evidence}
-    """
+    
     if not scraped_data:
         return {}
 
@@ -967,12 +962,6 @@ Use the pre-extracted IOCs. Prioritize: emails, crypto wallets, credential dumps
 SKIP domains from breach catalog listings (hundreds of .com domains = catalog noise, not IOCs).
 Max 15 rows. Include context for each IOC explaining its significance.
 "Source" = shortened source domain (max 25 chars).
-
-### Recommended Actions
-4-6 specific, actionable steps based on the findings above. Be concrete and reference specific findings:
-- Reference specific threat actors, handles, or IOCs (e.g., "Monitor Telegram handle @xyz for updates")
-- Suggest specific defensive measures based on the threat types found
-- Prioritize actions by urgency
 
 CRITICAL RULES:
 - NO raw HTML/boilerplate in any output (no "JavaScript is Disabled", no "Menu Log in Register")

@@ -3,7 +3,7 @@ import time
 import argparse
 from search import search_dark_web, save_results, get_urls_from_results, SEARCH_ENGINES
 from scrape import load_urls, scrape_all, save_scraped_data
-from ioc_extractor import extract_iocs_from_scraped, extract_contacts_from_scraped, format_iocs_summary, format_contacts_summary
+from ioc_extractor import extract_iocs_from_scraped, extract_contacts_from_scraped, format_iocs_summary
 
 
 def get_int_input(prompt: str, default: int, min_val: int = 1, max_val: int = None) -> int:
@@ -229,21 +229,13 @@ def main():
     contact_count = sum(len(v) for contacts in all_contacts.values() for v in contacts.values())
     print(f"[+] Extracted {contact_count} threat actor contacts from {len(all_contacts)} pages")
     
-    # save IOCs
-    if all_iocs:
-        ioc_text = format_iocs_summary(all_iocs)
+    # save IOCs + contacts combined
+    if all_iocs or all_contacts:
+        ioc_text = format_iocs_summary(all_iocs, all_contacts)
         os.makedirs("output", exist_ok=True)
         with open("output/iocs.txt", "w", encoding="utf-8") as f:
             f.write(ioc_text)
-        print(f"[+] IOCs saved to output/iocs.txt")
-    
-    # save contacts
-    if all_contacts:
-        contacts_text = format_contacts_summary(all_contacts)
-        os.makedirs("output", exist_ok=True)
-        with open("output/contacts.txt", "w", encoding="utf-8") as f:
-            f.write(contacts_text)
-        print(f"[+] Contacts saved to output/contacts.txt")
+        print(f"[+] IOCs + contacts saved to output/iocs.txt")
     
     file_analysis = {}
     file_verdicts = {}
@@ -422,7 +414,7 @@ def main():
         print(f"  - Target-Specific: {target_specific}")
         print(f"  - Generic/Unattributed: {generic}")
     print(f"  - Output:")
-    print(f"      results.txt, scraped_data.txt, iocs.txt, contacts.txt")
+    print(f"      results.txt, scraped_data.txt, iocs.txt")
     if file_analysis:
         print(f"      file_analysis.txt")
     if company_verdicts:
