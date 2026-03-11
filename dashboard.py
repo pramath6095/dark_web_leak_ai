@@ -20,6 +20,12 @@ _jobs = {}
 _job_lock = threading.Lock()
 
 
+def _check_abort(job_id: str) -> bool:
+    """check if a job has been flagged for abort"""
+    with _job_lock:
+        return _jobs.get(job_id, {}).get("abort", False)
+
+
 def _run_pipeline(job_id: str, query: str, config: dict):
     """run the main pipeline in a background thread."""
     import io
@@ -39,7 +45,7 @@ def _run_pipeline(job_id: str, query: str, config: dict):
 
         use_ai = config.get("use_ai", True)
         ai_provider = config.get("ai_provider", "gemini")
-        num_engines = config.get("num_engines", 17)
+        num_engines = config.get("num_engines", 16)
         scrape_limit = config.get("scrape_limit", 10)
         threads = config.get("threads", 3)
         depth = config.get("depth", 1)
@@ -51,6 +57,8 @@ def _run_pipeline(job_id: str, query: str, config: dict):
             set_provider(ai_provider)
             if ai_provider == "ollama":
                 set_ollama_model(config.get("ollama_model", ""))
+
+        if _check_abort(job_id): raise InterruptedError("Aborted")
 
         with _job_lock:
             _jobs[job_id]["progress"] = "searching"
@@ -64,6 +72,7 @@ def _run_pipeline(job_id: str, query: str, config: dict):
         all_results = []
         seen_urls = set()
         for sq in search_queries:
+            if _check_abort(job_id): raise InterruptedError("Aborted")
             batch = search_dark_web(sq, max_workers=threads, num_engines=num_engines)
             for item in batch:
                 url = item["url"] if isinstance(item, dict) else item
@@ -72,6 +81,8 @@ def _run_pipeline(job_id: str, query: str, config: dict):
                     all_results.append(item)
 
         save_results(all_results)
+
+        if _check_abort(job_id): raise InterruptedError("Aborted")
 
         with _job_lock:
             _jobs[job_id]["progress"] = "filtering"
@@ -83,11 +94,15 @@ def _run_pipeline(job_id: str, query: str, config: dict):
         urls = [r["url"] if isinstance(r, dict) else r for r in all_results]
         urls_to_scrape = urls[:scrape_limit]
 
+        if _check_abort(job_id): raise InterruptedError("Aborted")
+
         with _job_lock:
             _jobs[job_id]["progress"] = "scraping"
 
         scraped_data, html_cache = scrape_all(urls_to_scrape, max_workers=threads, depth=depth, max_pages=max_pages)
         save_scraped_data(scraped_data)
+
+        if _check_abort(job_id): raise InterruptedError("Aborted")
 
         all_iocs = extract_iocs_from_scraped(scraped_data)
         all_contacts = extract_contacts_from_scraped(scraped_data)
@@ -106,11 +121,15 @@ def _run_pipeline(job_id: str, query: str, config: dict):
 
         summary = ""
         if use_ai:
+            if _check_abort(job_id): raise InterruptedError("Aborted")
+
             with _job_lock:
                 _jobs[job_id]["progress"] = "classifying"
 
             from ai_engine import classify_threats, generate_summary
             classifications = classify_threats(query, scraped_data)
+
+            if _check_abort(job_id): raise InterruptedError("Aborted")
 
             with _job_lock:
                 _jobs[job_id]["progress"] = "summarizing"
@@ -127,6 +146,12 @@ def _run_pipeline(job_id: str, query: str, config: dict):
             _jobs[job_id]["results_count"] = len(all_results)
             _jobs[job_id]["scraped_count"] = sum(1 for v in scraped_data.values() if not v.startswith("[ERROR"))
             _jobs[job_id]["summary_preview"] = summary if summary else ""
+
+    except InterruptedError:
+        with _job_lock:
+            _jobs[job_id]["status"] = "aborted"
+            _jobs[job_id]["finished"] = time.time()
+        print(f"  [!] Job {job_id} aborted by user.")
 
     except Exception as e:
         with _job_lock:
@@ -221,6 +246,11 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     background: rgba(0,200,255,0.1); color: var(--accent); border: 1px solid rgba(0,200,255,0.2);
   }
   .btn-sm:hover { background: rgba(0,200,255,0.18); }
+  .btn-abort {
+    background: linear-gradient(135deg, var(--danger), #b91c1c);
+    color: #fff; width: 100%; margin-top: 20px;
+  }
+  .btn-abort:hover { filter: brightness(1.15); transform: translateY(-1px); }
 
   /* STATUS BADGE */
   .badge { display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px; border-radius: 20px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
@@ -355,7 +385,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       <label>Search Query</label>
       <input type="text" id="query" placeholder="e.g. company data breach, leaked credentials…" required>
       <div class="row">
-        <div><label>Engines</label><input type="number" id="engines" value="17" min="1" max="17"></div>
+        <div><label>Engines</label><input type="number" id="engines" value="16" min="1" max="16"></div>
         <div><label>Scrape Limit</label><input type="number" id="limit" value="10" min="1" max="50"></div>
         <div><label>Threads</label><input type="number" id="threads" value="3" min="1" max="10"></div>
       </div>
@@ -429,13 +459,38 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 const form = document.getElementById('query-form');
 const statusDiv = document.getElementById('job-status');
 const jobInfo = document.getElementById('job-info');
+const runBtn = document.getElementById('run-btn');
 let pollInterval = null;
+let currentJobId = null;
 
 const STEPS = ['searching','filtering','scraping','classifying','summarizing'];
 
+function setButtonRun() {
+  runBtn.textContent = '▶ Run Pipeline';
+  runBtn.className = 'btn btn-primary';
+  runBtn.disabled = false;
+  runBtn.onclick = null;
+  runBtn.type = 'submit';
+}
+
+function setButtonAbort() {
+  runBtn.textContent = '✕ Abort';
+  runBtn.className = 'btn btn-abort';
+  runBtn.disabled = false;
+  runBtn.type = 'button';
+  runBtn.onclick = abortJob;
+}
+
+async function abortJob() {
+  if (!currentJobId) return;
+  runBtn.disabled = true;
+  runBtn.textContent = '⏳ Aborting…';
+  await fetch('/abort/' + currentJobId, { method: 'POST' });
+}
+
 form.addEventListener('submit', async (e) => {
   e.preventDefault();
-  document.getElementById('run-btn').disabled = true;
+  runBtn.disabled = true;
   const body = {
     query:        document.getElementById('query').value,
     num_engines:  parseInt(document.getElementById('engines').value),
@@ -449,8 +504,10 @@ form.addEventListener('submit', async (e) => {
   };
   const res  = await fetch('/run', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) });
   const data = await res.json();
+  currentJobId = data.job_id;
   statusDiv.style.display = 'block';
   renderJobRunning('queued', null);
+  setButtonAbort();
   pollInterval = setInterval(() => pollJob(data.job_id), 2000);
 });
 
@@ -461,12 +518,20 @@ async function pollJob(jobId) {
   } else if (s.status === 'done') {
     renderJobDone(s);
     clearInterval(pollInterval);
-    document.getElementById('run-btn').disabled = false;
+    currentJobId = null;
+    setButtonRun();
+    loadFiles();
+  } else if (s.status === 'aborted') {
+    renderJobAborted();
+    clearInterval(pollInterval);
+    currentJobId = null;
+    setButtonRun();
     loadFiles();
   } else if (s.status === 'error') {
     renderJobError(s.error);
     clearInterval(pollInterval);
-    document.getElementById('run-btn').disabled = false;
+    currentJobId = null;
+    setButtonRun();
   }
 }
 
@@ -493,6 +558,14 @@ function renderJobDone(s) {
       <div class="job-stat"><div class="label">Pages Scraped</div><div class="value">${s.scraped_count || 0}</div></div>
     </div>
     ${s.summary_preview ? `<div class="summary-preview markdown-body">${typeof marked !== 'undefined' ? marked.parse(s.summary_preview) : escHtml(s.summary_preview)}</div>` : ''}`;
+}
+
+function renderJobAborted() {
+  jobInfo.innerHTML = `
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
+      <span class="badge badge-error"><span class="dot"></span>aborted</span>
+    </div>
+    <div class="plain-text" style="color:var(--warning)">Pipeline was aborted by user. Partial results may be available in Output Reports.</div>`;
 }
 
 function renderJobError(err) {
@@ -636,7 +709,7 @@ def run_pipeline():
         "use_ai":        data.get("use_ai", True),
         "ai_provider":   data.get("ai_provider", "gemini"),
         "ollama_model":  data.get("ollama_model", ""),
-        "num_engines":   data.get("num_engines", 17),
+        "num_engines":   data.get("num_engines", 16),
         "scrape_limit":  data.get("scrape_limit", 10),
         "threads":       data.get("threads", 3),
         "depth":         data.get("depth", 1),
@@ -692,6 +765,19 @@ def get_result(filename):
     with open(path, "r", encoding="utf-8") as f:
         content = f.read()
     return Response(content, mimetype="text/plain")
+
+
+@app.route("/abort/<job_id>", methods=["POST"])
+def abort_job(job_id):
+    """flag a running job for abort"""
+    with _job_lock:
+        job = _jobs.get(job_id)
+        if not job:
+            return jsonify({"error": "not found"}), 404
+        if job["status"] in ("done", "error", "aborted"):
+            return jsonify({"error": "job already finished"}), 400
+        job["abort"] = True
+    return jsonify({"status": "abort_requested"})
 
 
 @app.route("/ollama/models")
