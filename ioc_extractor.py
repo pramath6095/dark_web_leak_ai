@@ -446,12 +446,10 @@ def format_iocs_summary(all_iocs: dict) -> str:
             lines.append("")
             lines.append("| Value | Source |")
             lines.append("|---|---|")
-            for val, sources in sorted(items.items())[:20]:  # cap display at 20 per type
+            for val, sources in sorted(items.items()):
                 source_short = sources[0].replace("|", "\\|")
                 val_escaped = val.replace("|", "\\|")
                 lines.append(f"| `{val_escaped}` | {source_short} |")
-            if len(items) > 20:
-                lines.append(f"\n*... and {len(items) - 20} more*")
             lines.append("")
 
     return "\n".join(lines)
@@ -540,7 +538,7 @@ def format_contacts_summary(all_contacts: dict) -> str:
             lines.append("")
             lines.append("| Contact | Context | Sources |")
             lines.append("|---|---|---|")
-            for val, data in sorted(items.items())[:15]:
+            for val, data in sorted(items.items()):
                 val_escaped = val.replace("|", "\\|")
                 # pick the shortest non-empty context (most focused)
                 ctx = ""
@@ -551,8 +549,6 @@ def format_contacts_summary(all_contacts: dict) -> str:
                     ctx = best_ctx.replace("|", "\\|").replace("\n", " ")
                 src_count = f"{len(data['sources'])} page(s)"
                 lines.append(f"| `{val_escaped}` | {ctx} | {src_count} |")
-            if len(items) > 15:
-                lines.append(f"\n*... and {len(items) - 15} more*")
             lines.append("")
 
     return "\n".join(lines)
