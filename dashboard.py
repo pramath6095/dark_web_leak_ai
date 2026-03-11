@@ -73,7 +73,7 @@ def _run_pipeline(job_id: str, query: str, config: dict):
         seen_urls = set()
         for sq in search_queries:
             if _check_abort(job_id): raise InterruptedError("Aborted")
-            batch = search_dark_web(sq, max_workers=threads, num_engines=num_engines)
+            batch = search_dark_web(sq, max_workers=threads, num_engines=num_engines, check_abort=lambda: _check_abort(job_id))
             for item in batch:
                 url = item["url"] if isinstance(item, dict) else item
                 if url not in seen_urls:
@@ -99,7 +99,7 @@ def _run_pipeline(job_id: str, query: str, config: dict):
         with _job_lock:
             _jobs[job_id]["progress"] = "scraping"
 
-        scraped_data, html_cache = scrape_all(urls_to_scrape, max_workers=threads, depth=depth, max_pages=max_pages)
+        scraped_data, html_cache = scrape_all(urls_to_scrape, max_workers=threads, depth=depth, max_pages=max_pages, check_abort=lambda: _check_abort(job_id))
         save_scraped_data(scraped_data)
 
         if _check_abort(job_id): raise InterruptedError("Aborted")

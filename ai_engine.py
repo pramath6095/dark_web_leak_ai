@@ -1,6 +1,7 @@
 import os
 import json
 import time
+import threading
 import requests
 from dotenv import load_dotenv
 load_dotenv()
@@ -404,8 +405,12 @@ def _get_ollama_model() -> str:
     return None
 
 
+# lock to serialise Ollama requests (local models handle one request at a time)
+_ollama_lock = threading.Lock()
+
+
 def _call_ollama(prompt: str, model: str) -> str:
-    """call ollama api for local model inference"""
+    """call ollama api for local model inference (serialised via lock)"""
     url = f"{OLLAMA_BASE_URL}/api/generate"
 
     payload = {
@@ -417,13 +422,14 @@ def _call_ollama(prompt: str, model: str) -> str:
         }
     }
 
-    try:
-        response = requests.post(url, json=payload, timeout=120)
-        response.raise_for_status()
-        return response.json().get("response", "")
-    except Exception as e:
-        print(f"  [!] Ollama request failed: {str(e)[:80]}")
-        raise
+    with _ollama_lock:
+        try:
+            response = requests.post(url, json=payload, timeout=600)
+            response.raise_for_status()
+            return response.json().get("response", "")
+        except Exception as e:
+            print(f"  [!] Ollama request failed: {str(e)[:80]}")
+            raise
 
 
 # ============================================================

@@ -152,7 +152,7 @@ async def fetch_from_engine(endpoint: str, query: str, stream_id: int) -> list:
         return []
 
 
-async def search_dark_web_async(query: str, max_workers: int = 3, num_engines: int = None) -> list:
+async def search_dark_web_async(query: str, max_workers: int = 3, num_engines: int = None, check_abort: callable = None) -> list:
     engines_to_use = SEARCH_ENGINES[:num_engines] if num_engines else SEARCH_ENGINES
     
     print(f"\n[+] Searching dark web for: '{query}'")
@@ -163,7 +163,11 @@ async def search_dark_web_async(query: str, max_workers: int = 3, num_engines: i
     semaphore = asyncio.Semaphore(max_workers)
     
     async def limited_fetch(engine, stream_id):
+        if check_abort and check_abort():
+            raise InterruptedError("Aborted by user")
         async with semaphore:
+            if check_abort and check_abort():
+                raise InterruptedError("Aborted by user")
             return await fetch_from_engine(engine, encoded_query, stream_id)
     
     tasks = [
@@ -178,6 +182,9 @@ async def search_dark_web_async(query: str, max_workers: int = 3, num_engines: i
     for result in results:
         if isinstance(result, list):
             all_results.extend(result)
+        elif isinstance(result, InterruptedError):
+            print("\n  [!] Search aborted early. Processing partial results...")
+            break
     
     seen = set()
     unique_results = []
@@ -190,8 +197,8 @@ async def search_dark_web_async(query: str, max_workers: int = 3, num_engines: i
     return unique_results
 
 
-def search_dark_web(query: str, max_workers: int = 3, num_engines: int = None) -> list:
-    return asyncio.run(search_dark_web_async(query, max_workers, num_engines))
+def search_dark_web(query: str, max_workers: int = 3, num_engines: int = None, check_abort: callable = None) -> list:
+    return asyncio.run(search_dark_web_async(query, max_workers, num_engines, check_abort))
 
 
 def save_results(results: list, filename: str = "output/results.txt"):
