@@ -637,8 +637,7 @@ def format_iocs_summary(all_iocs: dict, all_contacts: dict = None) -> str:
         "ssn": "SSN-like Patterns",
     }
 
-    # user-specified importance order:
-    # Credential Pairs → Crypto Wallets → Emails → Telegram Users → Hashes → IP Addresses → Domains → URLs
+    # Credential Pairs → Crypto Wallets → Emails → Telegram → Hashes → IPs → Domains → URLs
     ioc_display_order = [
         "credential_pair", "credit_card", "ssn",
         "btc_wallet", "eth_wallet", "xmr_wallet", "ltc_wallet",
