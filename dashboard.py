@@ -167,17 +167,17 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <style>
   :root {
-    --bg: #080b12;
-    --surface: #0e1420;
-    --surface2: #131929;
-    --border: #1e2d45;
-    --accent: #00c8ff;
-    --accent2: #7c3aed;
+    --bg: #0a0a0a;
+    --surface: #111111;
+    --surface2: #1a1a1a;
+    --border: #2a2a2a;
+    --accent: #22d3ee;
+    --accent2: #06b6d4;
     --success: #10b981;
     --warning: #f59e0b;
     --danger: #ef4444;
-    --text: #e2e8f0;
-    --muted: #64748b;
+    --text: #e4e4e7;
+    --muted: #71717a;
     --mono: 'JetBrains Mono', monospace;
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -185,14 +185,17 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
   /* HEADER */
   .header {
-    background: linear-gradient(135deg, #0a0f1e 0%, #0d1528 100%);
+    background: #0d0d0d;
     padding: 20px 32px;
     border-bottom: 1px solid var(--border);
-    display: flex; align-items: center; gap: 16px;
+    display: flex; align-items: center; gap: 14px;
   }
-  .header-icon { font-size: 28px; }
-  .header h1 { font-size: 20px; font-weight: 700; background: linear-gradient(135deg, var(--accent), var(--accent2)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
-  .header p { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .header-logo {
+    width: 10px; height: 24px; border-radius: 2px;
+    background: linear-gradient(180deg, var(--accent), var(--accent2));
+  }
+  .header h1 { font-size: 18px; font-weight: 700; color: var(--text); letter-spacing: -0.01em; }
+  .header p { color: var(--muted); font-size: 11px; margin-top: 2px; letter-spacing: 0.04em; text-transform: uppercase; }
 
   /* LAYOUT */
   .container { max-width: 1100px; margin: 0 auto; padding: 28px 24px; }
@@ -206,11 +209,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     margin-bottom: 24px;
   }
   .card-header { display: flex; align-items: center; gap: 10px; margin-bottom: 20px; }
-  .card-header h2 { font-size: 15px; font-weight: 600; color: var(--text); }
-  .card-icon { width: 32px; height: 32px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 15px; }
-  .card-icon.blue { background: rgba(0,200,255,0.12); }
-  .card-icon.purple { background: rgba(124,58,237,0.12); }
-  .card-icon.green { background: rgba(16,185,129,0.12); }
+  .card-header h2 { font-size: 14px; font-weight: 600; color: var(--text); text-transform: uppercase; letter-spacing: 0.04em; }
+  .card-header .h-bar { width: 3px; height: 18px; border-radius: 2px; background: var(--accent); flex-shrink: 0; }
 
   /* FORM */
   label { display: block; color: var(--muted); font-size: 12px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 6px; margin-top: 16px; }
@@ -230,18 +230,18 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     cursor: pointer; border: none; transition: all 0.2s; font-family: inherit;
   }
   .btn-primary {
-    background: linear-gradient(135deg, var(--accent), #0080ff);
+    background: var(--accent); 
     color: #000; width: 100%; margin-top: 20px;
   }
   .btn-primary:hover { filter: brightness(1.1); transform: translateY(-1px); }
   .btn-primary:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
   .btn-sm {
     padding: 6px 14px; font-size: 12px; border-radius: 6px;
-    background: rgba(0,200,255,0.1); color: var(--accent); border: 1px solid rgba(0,200,255,0.2);
+    background: rgba(255,255,255,0.06); color: var(--muted); border: 1px solid var(--border);
   }
-  .btn-sm:hover { background: rgba(0,200,255,0.18); }
+  .btn-sm:hover { background: rgba(255,255,255,0.10); color: var(--text); }
   .btn-abort {
-    background: linear-gradient(135deg, var(--danger), #b91c1c);
+    background: var(--danger);
     color: #fff; width: 100%; margin-top: 20px;
   }
   .btn-abort:hover { filter: brightness(1.15); transform: translateY(-1px); }
@@ -267,18 +267,21 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .summary-preview { background: var(--surface2); border: 1px solid var(--border); border-radius: 10px; padding: 16px; font-size: 13px; line-height: 1.7; color: #cbd5e1; white-space: normal; max-height: 350px; overflow-y: auto; overflow-x: auto; margin-top: 12px; }
 
   /* FILE CARDS */
-  .files-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; }
+  .files-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
   .file-card {
-    background: var(--surface2); border: 1px solid var(--border); border-radius: 12px;
-    padding: 18px; transition: border-color 0.2s, box-shadow 0.2s;
+    background: var(--surface2); border: 1px solid var(--border); border-radius: 10px;
+    padding: 16px; transition: border-color 0.2s, background 0.2s;
   }
-  .file-card:hover { border-color: rgba(0,200,255,0.3); box-shadow: 0 0 20px rgba(0,200,255,0.05); }
-  .file-card-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
-  .file-card-icon { width: 40px; height: 40px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 20px; flex-shrink: 0; }
-  .file-card-icon.summary  { background: rgba(124,58,237,0.15); }
-  .file-card-icon.iocs     { background: rgba(239,68,68,0.12); }
-  .file-card-icon.contacts { background: rgba(16,185,129,0.12); }
-  .file-card-icon.default  { background: rgba(0,200,255,0.12); }
+  .file-card:hover { border-color: #3a3a3a; background: #1e1e1e; }
+  .file-card-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+  .file-card-indicator {
+    width: 4px; height: 32px; border-radius: 2px; flex-shrink: 0;
+  }
+  .file-card-indicator.summary  { background: var(--accent); }
+  .file-card-indicator.iocs     { background: var(--danger); }
+  .file-card-indicator.contacts { background: var(--success); }
+  .file-card-indicator.results  { background: var(--warning); }
+  .file-card-indicator.default  { background: var(--muted); }
   .file-card-name { font-size: 14px; font-weight: 600; color: var(--text); }
   .file-card-size { font-size: 11px; color: var(--muted); margin-top: 2px; }
   .file-card-actions { display: flex; gap: 8px; }
@@ -290,9 +293,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   }
   .modal-overlay.open { display: flex; }
   .modal {
-    background: var(--surface); border: 1px solid var(--border); border-radius: 16px;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
     width: 100%; max-width: 95vw; max-height: 95vh; display: flex; flex-direction: column;
-    box-shadow: 0 24px 80px rgba(0,0,0,0.5);
+    box-shadow: 0 24px 80px rgba(0,0,0,0.6);
   }
   .modal-header {
     display: flex; align-items: center; justify-content: space-between;
@@ -301,12 +304,12 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .modal-title { display: flex; align-items: center; gap: 12px; }
   .modal-title h3 { font-size: 15px; font-weight: 600; }
   .modal-close {
-    width: 32px; height: 32px; border-radius: 8px; border: none;
+    width: 32px; height: 32px; border-radius: 6px; border: none;
     background: var(--surface2); color: var(--muted); font-size: 18px;
     cursor: pointer; display: flex; align-items: center; justify-content: center;
     transition: background 0.2s, color 0.2s;
   }
-  .modal-close:hover { background: rgba(239,68,68,0.15); color: var(--danger); }
+  .modal-close:hover { background: rgba(255,255,255,0.08); color: var(--text); }
   .modal-body { padding: 24px; overflow-y: auto; flex: 1; }
 
   /* CONTENT RENDERERS */
@@ -353,11 +356,11 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .markdown-body th, .markdown-body td { border: 1px solid var(--border); padding: 10px 14px; text-align: left; white-space: normal; word-break: break-word; }
   .markdown-body th { background: rgba(255,255,255,0.05); color: white; font-weight: 600; position: sticky; top: 0; z-index: 1; }
   .markdown-body tr:nth-child(even) { background: rgba(255,255,255,0.02); }
-  .markdown-body tr:hover { background: rgba(0,200,255,0.03); }
+  .markdown-body tr:hover { background: rgba(255,255,255,0.02); }
   .markdown-body hr { border: none; border-top: 1px solid var(--border); margin: 24px 0; }
   .markdown-body a { color: var(--accent); text-decoration: none; }
   .markdown-body a:hover { text-decoration: underline; }
-  .markdown-body blockquote { border-left: 3px solid rgba(0,200,255,0.4); padding: 8px 16px; color: var(--muted); margin: 0 0 16px; background: rgba(0,200,255,0.03); border-radius: 0 6px 6px 0; font-size: 13px; }
+  .markdown-body blockquote { border-left: 3px solid var(--accent); padding: 8px 16px; color: var(--muted); margin: 0 0 16px; background: rgba(255,255,255,0.02); border-radius: 0 6px 6px 0; font-size: 13px; }
 
   /* ── IOC TABLE SCROLL CONTAINER ── */
   .ioc-scroll {
@@ -378,7 +381,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   td code {
     cursor: pointer; transition: all 0.15s ease; position: relative;
   }
-  td code:hover { background: rgba(0,200,255,0.15); color: var(--accent); }
+  td code:hover { background: rgba(255,255,255,0.10); color: var(--accent); }
   td code:active { transform: scale(0.96); }
   td code.copied { background: rgba(16,185,129,0.2); color: var(--success); }
   .copy-toast {
@@ -393,22 +396,22 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   /* ── SHOW MORE / LESS ── */
   .show-toggle {
     display: block; width: 100%; padding: 7px 0;
-    margin: 0 0 16px; border: 1px solid rgba(255,255,255,0.06);
-    background: linear-gradient(135deg, rgba(0,200,255,0.04), rgba(124,58,237,0.04));
-    color: var(--muted); border-radius: 8px;
+    margin: 0 0 16px; border: 1px solid var(--border);
+    background: rgba(255,255,255,0.02);
+    color: var(--muted); border-radius: 6px;
     cursor: pointer; font-size: 12px; font-weight: 500;
     font-family: 'Inter', sans-serif; letter-spacing: 0.02em;
     transition: all 0.2s ease;
   }
-  .show-toggle:hover { color: var(--accent); border-color: rgba(0,200,255,0.2); background: rgba(0,200,255,0.06); }
+  .show-toggle:hover { color: var(--text); border-color: #3a3a3a; background: rgba(255,255,255,0.04); }
 </style>
 </head>
 <body>
 <div class="header">
-  <span class="header-icon">🔍</span>
+  <div class="header-logo"></div>
   <div>
     <h1>Dark Web Leak Monitor</h1>
-    <p>AI-Powered Threat Intelligence Pipeline</p>
+    <p>Threat Intelligence Pipeline</p>
   </div>
 </div>
 <div class="container">
@@ -416,7 +419,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   <!-- RUN QUERY -->
   <div class="card">
     <div class="card-header">
-      <div class="card-icon blue">🚀</div>
+      <div class="h-bar"></div>
       <h2>Run Query</h2>
     </div>
     <form id="query-form">
@@ -452,14 +455,14 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         </div>
         <div></div>
       </div>
-      <button type="submit" id="run-btn" class="btn btn-primary">▶ Run Pipeline</button>
+      <button type="submit" id="run-btn" class="btn btn-primary">Run Pipeline</button>
     </form>
   </div>
 
   <!-- JOB STATUS -->
   <div class="card" id="job-status">
     <div class="card-header">
-      <div class="card-icon blue">⚡</div>
+      <div class="h-bar"></div>
       <h2>Job Status</h2>
     </div>
     <div id="job-info"></div>
@@ -468,7 +471,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   <!-- REPORTS -->
   <div class="card">
     <div class="card-header">
-      <div class="card-icon purple">📂</div>
+      <div class="h-bar"></div>
       <h2>Output Reports</h2>
     </div>
     <div id="file-list"><div class="empty-state">No reports yet. Run a pipeline to generate reports.</div></div>
@@ -481,7 +484,6 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   <div class="modal">
     <div class="modal-header">
       <div class="modal-title">
-        <span id="modal-icon" style="font-size:20px"></span>
         <h3 id="modal-title">Report</h3>
       </div>
       <button class="modal-close" onclick="closeModal()">✕</button>
@@ -504,7 +506,7 @@ let currentJobId = null;
 const STEPS = ['searching','filtering','scraping','classifying','summarizing'];
 
 function setButtonRun() {
-  runBtn.textContent = '▶ Run Pipeline';
+  runBtn.textContent = 'Run Pipeline';
   runBtn.className = 'btn btn-primary';
   runBtn.disabled = false;
   runBtn.onclick = null;
@@ -512,7 +514,7 @@ function setButtonRun() {
 }
 
 function setButtonAbort() {
-  runBtn.textContent = '✕ Abort';
+  runBtn.textContent = 'Abort';
   runBtn.className = 'btn btn-abort';
   runBtn.disabled = false;
   runBtn.type = 'button';
@@ -522,7 +524,7 @@ function setButtonAbort() {
 async function abortJob() {
   if (!currentJobId) return;
   runBtn.disabled = true;
-  runBtn.textContent = '⏳ Aborting…';
+  runBtn.textContent = 'Aborting…';
   await fetch('/abort/' + currentJobId, { method: 'POST' });
 }
 
@@ -576,7 +578,7 @@ async function pollJob(jobId) {
 function renderJobRunning(status, progress) {
   const stepHtml = STEPS.map(s =>
     `<span class="progress-step ${progress === s ? 'active' : ''}">
-      ${progress === s ? '⟳' : (STEPS.indexOf(s) < STEPS.indexOf(progress) ? '✓' : '○')} ${s}
+      ${progress === s ? '›' : (STEPS.indexOf(s) < STEPS.indexOf(progress) ? '·' : '·')} ${s}
     </span>`
   ).join('<span style="color:var(--border);margin:0 4px">›</span>');
   jobInfo.innerHTML = `
@@ -632,35 +634,32 @@ function fileCardHtml(f) {
     <div class="file-card">
       <div class="file-card-top">
         <div style="display:flex;align-items:center;gap:12px;">
-          <div class="file-card-icon ${meta.cls}">${meta.icon}</div>
+          <div class="file-card-indicator ${meta.cls}"></div>
           <div>
-            <div class="file-card-name">${escHtml(f.name)}</div>
+            <div class="file-card-name">${meta.displayName}</div>
             <div class="file-card-size">${f.size} · ${meta.label}</div>
           </div>
         </div>
       </div>
       <div class="file-card-actions">
-        <button class="btn btn-sm" onclick="openFile('${escHtml(f.name)}', '${meta.cls}', '${meta.icon}')">
-          👁 View
-        </button>
-        <a class="btn btn-sm" href="/results/${escHtml(f.name)}" download style="text-decoration:none">⬇ Download</a>
+        <button class="btn btn-sm" onclick="openFile('${escHtml(f.name)}', '${meta.cls}', '${meta.displayName}')">View</button>
+        <a class="btn btn-sm" href="/results/${escHtml(f.name)}" download style="text-decoration:none">Download</a>
       </div>
     </div>`;
 }
 
 function fileMeta(name) {
-  if (name.includes('summary'))  return { icon:'📋', cls:'summary',  label:'AI Summary'       };
-  if (name.includes('ioc'))      return { icon:'🔴', cls:'iocs',     label:'IOC Indicators'   };
-  if (name.includes('contact'))  return { icon:'📬', cls:'contacts', label:'Actor Contacts'   };
-  if (name.includes('scrape'))   return { icon:'🕸', cls:'default',  label:'Scraped Data'     };
-  if (name.includes('search'))   return { icon:'🔎', cls:'default',  label:'Search Results'   };
-  return                                { icon:'📄', cls:'default',  label:'Report'           };
+  if (name.includes('summary'))  return { displayName:'Summary',        cls:'summary',  label:'AI Summary'       };
+  if (name.includes('ioc'))      return { displayName:'IOC Indicators',  cls:'iocs',     label:'IOC Indicators'   };
+  if (name.includes('contact'))  return { displayName:'Actor Contacts',  cls:'contacts', label:'Actor Contacts'   };
+  if (name.includes('scrape'))   return { displayName:'Scraped Data',    cls:'default',  label:'Scraped Data'     };
+  if (name.includes('result'))   return { displayName:'Search Results',  cls:'results',  label:'Search Results'   };
+  return                                { displayName: name,             cls:'default',  label:'Report'           };
 }
 
 // ── Modal viewer ──────────────────────────────────────────
-async function openFile(name, cls, icon) {
-  document.getElementById('modal-icon').textContent  = icon;
-  document.getElementById('modal-title').textContent = name;
+async function openFile(name, cls, displayName) {
+  document.getElementById('modal-title').textContent = displayName;
   document.getElementById('modal-body').innerHTML    =
     '<div class="empty-state"><div class="spinner"></div>Loading…</div>';
   document.getElementById('modal-overlay').classList.add('open');
