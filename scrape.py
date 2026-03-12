@@ -11,6 +11,9 @@ load_dotenv()
 import warnings
 warnings.filterwarnings("ignore")
 
+import functools
+print = functools.partial(print, flush=True)
+
 # tor proxy config
 TOR_PROXY_HOST = os.getenv("TOR_PROXY_HOST", "127.0.0.1")
 TOR_PROXY_PORT = os.getenv("TOR_PROXY_PORT", "9150")

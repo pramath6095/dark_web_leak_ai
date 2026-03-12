@@ -7,6 +7,8 @@ import json
 import time
 import threading
 from datetime import datetime
+import functools
+print = functools.partial(print, flush=True)
 
 try:
     from flask import Flask, request, jsonify, Response, send_from_directory
