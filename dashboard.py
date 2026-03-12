@@ -291,7 +291,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .modal-overlay.open { display: flex; }
   .modal {
     background: var(--surface); border: 1px solid var(--border); border-radius: 16px;
-    width: 100%; max-width: 1400px; max-height: 95vh; display: flex; flex-direction: column;
+    width: 100%; max-width: 95vw; max-height: 95vh; display: flex; flex-direction: column;
     box-shadow: 0 24px 80px rgba(0,0,0,0.5);
   }
   .modal-header {
@@ -349,7 +349,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .markdown-body code { background: rgba(0,0,0,0.3); padding: 2px 6px; border-radius: 4px; font-family: var(--mono); font-size: 12.5px; }
   .markdown-body pre { background: rgba(0,0,0,0.5); padding: 16px; border-radius: 8px; overflow-x: auto; margin-bottom: 16px; border: 1px solid var(--border); }
   .markdown-body pre code { background: none; padding: 0; border: none; }
-  .markdown-body table { width: 100%; border-collapse: collapse; margin-bottom: 16px; display: block; overflow-x: auto; }
+  .markdown-body table { width: 100%; border-collapse: collapse; margin-bottom: 16px; overflow-x: auto; table-layout: fixed; }
   .markdown-body th, .markdown-body td { border: 1px solid var(--border); padding: 10px 14px; text-align: left; white-space: normal; word-break: break-word; }
   .markdown-body th { background: rgba(255,255,255,0.05); color: white; font-weight: 600; position: sticky; top: 0; z-index: 1; }
   .markdown-body tr:nth-child(even) { background: rgba(255,255,255,0.02); }
@@ -365,24 +365,30 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     border: 1px solid var(--border); border-radius: 10px;
     margin-bottom: 4px; background: rgba(0,0,0,0.15);
   }
-  .ioc-scroll table { margin-bottom: 0; }
+  .ioc-scroll table { margin-bottom: 0; width: 100%; table-layout: fixed; }
+  .ioc-scroll thead th:not(:empty) ~ * { } /* keep non-empty headers */
+  .ioc-scroll thead { visibility: collapse; }
+  .ioc-scroll td { overflow: hidden; text-overflow: ellipsis; }
   .ioc-scroll::-webkit-scrollbar { width: 5px; }
   .ioc-scroll::-webkit-scrollbar-track { background: transparent; }
   .ioc-scroll::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 5px; }
   .ioc-scroll::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.2); }
 
-  /* ── COPY BUTTON ── */
-  .cp-btn {
-    display: inline-flex; align-items: center; gap: 3px;
-    margin-left: 8px; padding: 2px 7px; border: none;
-    background: rgba(255,255,255,0.06); color: var(--muted);
-    border-radius: 4px; cursor: pointer; font-size: 11px;
-    font-family: var(--mono); vertical-align: middle;
-    transition: all 0.15s ease; opacity: 0.5;
+  /* ── CLICK-TO-COPY on code cells ── */
+  td code {
+    cursor: pointer; transition: all 0.15s ease; position: relative;
   }
-  tr:hover .cp-btn { opacity: 1; }
-  .cp-btn:hover { background: rgba(0,200,255,0.12); color: var(--accent); }
-  .cp-btn.ok { background: rgba(16,185,129,0.15); color: var(--success); opacity: 1; }
+  td code:hover { background: rgba(0,200,255,0.15); color: var(--accent); }
+  td code:active { transform: scale(0.96); }
+  td code.copied { background: rgba(16,185,129,0.2); color: var(--success); }
+  .copy-toast {
+    position: fixed; bottom: 28px; left: 50%; transform: translateX(-50%) translateY(20px);
+    background: rgba(16,185,129,0.92); color: #fff; padding: 8px 20px;
+    border-radius: 8px; font-size: 13px; font-weight: 500;
+    font-family: 'Inter', sans-serif; pointer-events: none;
+    opacity: 0; transition: opacity 0.25s, transform 0.25s; z-index: 999;
+  }
+  .copy-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 
   /* ── SHOW MORE / LESS ── */
   .show-toggle {
@@ -690,18 +696,27 @@ function escHtml(s) {
 function enhanceIOCView(root) {
   if (!root) return;
 
-  // 1) Copy buttons on every <code> inside td
+  // ensure toast element exists
+  if (!document.getElementById('copy-toast')) {
+    const t = document.createElement('div');
+    t.id = 'copy-toast'; t.className = 'copy-toast'; t.textContent = '✓ Copied to clipboard';
+    document.body.appendChild(t);
+  }
+
+  // 1) Click-to-copy on every <code> inside td
   root.querySelectorAll('td code').forEach(code => {
-    if (code.parentNode.querySelector('.cp-btn')) return;
-    const b = document.createElement('button');
-    b.className = 'cp-btn'; b.textContent = 'copy';
-    b.onclick = () => {
+    if (code._copyBound) return;
+    code._copyBound = true;
+    code.title = 'Click to copy';
+    code.addEventListener('click', () => {
       navigator.clipboard.writeText(code.textContent).then(() => {
-        b.textContent = '✓ copied'; b.classList.add('ok');
-        setTimeout(() => { b.textContent = 'copy'; b.classList.remove('ok'); }, 1400);
+        code.classList.add('copied');
+        setTimeout(() => code.classList.remove('copied'), 900);
+        const toast = document.getElementById('copy-toast');
+        toast.classList.add('show');
+        setTimeout(() => toast.classList.remove('show'), 1200);
       });
-    };
-    code.after(b);
+    });
   });
 
   // 2) Scrollable + collapsible tables

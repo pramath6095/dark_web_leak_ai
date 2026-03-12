@@ -710,10 +710,19 @@ def format_iocs_summary(all_iocs: dict, all_contacts: dict = None) -> str:
                 else:
                     lines.append(f"- **{label}** ({len(values)}):")
                     lines.append("")
-                    lines.append("| Value |")
-                    lines.append("|---|")
-                    for v in sorted(values):
-                        lines.append(f"| `{v.replace(chr(124), chr(92) + chr(124))}` |")
+                    cols = 5
+                    seps = " | ".join(["---"] * cols)
+                    empty_hdr = " | ".join([" "] * cols)
+                    lines.append(f"| {empty_hdr} |")
+                    lines.append(f"| {seps} |")
+                    sorted_vals = sorted(values)
+                    for i in range(0, len(sorted_vals), cols):
+                        row_vals = sorted_vals[i:i + cols]
+                        cells = [f"`{v.replace(chr(124), chr(92) + chr(124))}`" for v in row_vals]
+                        # pad if the last row has fewer than cols items
+                        while len(cells) < cols:
+                            cells.append("")
+                        lines.append(f"| {' | '.join(cells)} |")
                     lines.append("")
 
             lines.append("")
