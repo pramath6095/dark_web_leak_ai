@@ -609,9 +609,10 @@ def _onion_url_label(url: str) -> str:
         return url[:40] + "…" if len(url) > 40 else url
 
 
-def format_iocs_summary(all_iocs: dict, all_contacts: dict = None) -> str:
+def format_iocs_summary(all_iocs: dict, all_contacts: dict = None, company_categories: dict = None) -> str:
     """format extracted IOCs and contacts into a combined markdown summary,
-    grouped by source URL so all IOCs from the same page appear together."""
+    grouped by source URL so all IOCs from the same page appear together.
+    if company_categories is provided, splits into company-specific and general sections."""
     if not all_iocs and not all_contacts:
         return "No IOCs or contacts extracted."
 
@@ -651,9 +652,17 @@ def format_iocs_summary(all_iocs: dict, all_contacts: dict = None) -> str:
 
     # ── aggregate totals ──
     totals = {}
+    cs_totals = {}
+    gen_totals = {}
     for url, iocs in (all_iocs or {}).items():
+        rel = company_categories.get(url, "general") if company_categories else None
         for ioc_type, values in iocs.items():
             totals[ioc_type] = totals.get(ioc_type, 0) + len(values)
+            if company_categories:
+                if rel == "company_specific":
+                    cs_totals[ioc_type] = cs_totals.get(ioc_type, 0) + len(values)
+                else:
+                    gen_totals[ioc_type] = gen_totals.get(ioc_type, 0) + len(values)
 
     grand_total = sum(totals.values())
 
@@ -662,6 +671,13 @@ def format_iocs_summary(all_iocs: dict, all_contacts: dict = None) -> str:
         lines.append("### IOC Summary")
         lines.append("")
         lines.append(f"**Total Indicators: {grand_total}** · **{len(all_iocs or {})} sources** scanned")
+        if company_categories:
+            cs_src = sum(1 for url in (all_iocs or {}) if company_categories.get(url) == "company_specific")
+            gen_src = sum(1 for url in (all_iocs or {}) if company_categories.get(url) != "company_specific")
+            cs_total = sum(cs_totals.values())
+            gen_total = sum(gen_totals.values())
+            lines.append(f"- **Company-Specific**: {cs_total} indicators from {cs_src} sources")
+            lines.append(f"- **General Dark Web**: {gen_total} indicators from {gen_src} sources")
         lines.append("")
         for ioc_type in ioc_display_order:
             if ioc_type in totals:
@@ -669,13 +685,17 @@ def format_iocs_summary(all_iocs: dict, all_contacts: dict = None) -> str:
                 lines.append(f"- **{label}**: {totals[ioc_type]}")
         lines.append("")
 
-    # ── IOCs grouped by source URL ──
-    if all_iocs:
-        lines.append("---")
-        lines.append("")
+    # ── helper: render a group of IOC sources ──
+    def _render_source_group(source_items, group_label=None):
+        """render IOC tables for a list of (url, iocs) tuples."""
+        if not source_items:
+            if group_label:
+                lines.append(f"*No {group_label.lower()} IOCs found.*")
+                lines.append("")
+            return
 
         sorted_sources = sorted(
-            all_iocs.items(),
+            source_items,
             key=lambda x: sum(len(v) for v in x[1].values()),
             reverse=True
         )
@@ -685,9 +705,9 @@ def format_iocs_summary(all_iocs: dict, all_contacts: dict = None) -> str:
 
             if ".onion" in url:
                 label = _onion_url_label(url)
-                lines.append(f'### <a href="{url}" title="{url}">{label}</a> ({total} indicators)')
+                lines.append(f'#### <a href="{url}" title="{url}">{label}</a> ({total} indicators)')
             else:
-                lines.append(f"### Source: {url} ({total} indicators)")
+                lines.append(f"#### Source: {url} ({total} indicators)")
 
             # per-source type summary
             type_parts = []
@@ -702,13 +722,13 @@ def format_iocs_summary(all_iocs: dict, all_contacts: dict = None) -> str:
                 if ioc_type not in iocs:
                     continue
                 values = iocs[ioc_type]
-                label = labels.get(ioc_type, ioc_type)
+                lbl = labels.get(ioc_type, ioc_type)
 
                 if len(values) <= 8:
                     val_list = ", ".join(f"`{v}`" for v in sorted(values))
-                    lines.append(f"- **{label}** ({len(values)}): {val_list}")
+                    lines.append(f"- **{lbl}** ({len(values)}): {val_list}")
                 else:
-                    lines.append(f"- **{label}** ({len(values)}):")
+                    lines.append(f"- **{lbl}** ({len(values)}):")
                     lines.append("")
                     cols = 5
                     seps = " | ".join(["---"] * cols)
@@ -719,13 +739,36 @@ def format_iocs_summary(all_iocs: dict, all_contacts: dict = None) -> str:
                     for i in range(0, len(sorted_vals), cols):
                         row_vals = sorted_vals[i:i + cols]
                         cells = [f"`{v.replace(chr(124), chr(92) + chr(124))}`" for v in row_vals]
-                        # pad if the last row has fewer than cols items
                         while len(cells) < cols:
                             cells.append("")
                         lines.append(f"| {' | '.join(cells)} |")
                     lines.append("")
 
             lines.append("")
+
+    # ── IOCs grouped by source URL ──
+    if all_iocs:
+        lines.append("---")
+        lines.append("")
+
+        if company_categories:
+            # split into company-specific and general
+            cs_sources = [(url, iocs) for url, iocs in all_iocs.items()
+                          if company_categories.get(url) == "company_specific"]
+            gen_sources = [(url, iocs) for url, iocs in all_iocs.items()
+                           if company_categories.get(url) != "company_specific"]
+
+            lines.append("### Company-Specific IOCs")
+            lines.append("")
+            _render_source_group(cs_sources, "company-specific")
+
+            lines.append("---")
+            lines.append("")
+            lines.append("### General Dark Web IOCs")
+            lines.append("")
+            _render_source_group(gen_sources, "general")
+        else:
+            _render_source_group(list(all_iocs.items()))
 
     # ── threat actor contacts section ──
     if all_contacts:

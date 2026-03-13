@@ -109,13 +109,8 @@ def _run_pipeline(job_id: str, query: str, config: dict):
         all_iocs = extract_iocs_from_scraped(scraped_data)
         all_contacts = extract_contacts_from_scraped(scraped_data)
 
-        if all_iocs or all_contacts:
-            ioc_text = format_iocs_summary(all_iocs, all_contacts)
-            os.makedirs("output", exist_ok=True)
-            with open("output/iocs.txt", "w", encoding="utf-8") as f:
-                f.write(ioc_text)
-
         summary = ""
+        company_categories = {}
         if use_ai:
             if _check_abort(job_id): raise InterruptedError("Aborted")
 
@@ -142,6 +137,13 @@ def _run_pipeline(job_id: str, query: str, config: dict):
             os.makedirs("output", exist_ok=True)
             with open("output/summary.txt", "w", encoding="utf-8") as f:
                 f.write(summary)
+
+        # save IOCs + contacts (after company categorization if AI enabled)
+        if all_iocs or all_contacts:
+            ioc_text = format_iocs_summary(all_iocs, all_contacts, company_categories=company_categories or None)
+            os.makedirs("output", exist_ok=True)
+            with open("output/iocs.txt", "w", encoding="utf-8") as f:
+                f.write(ioc_text)
 
         with _job_lock:
             _jobs[job_id]["status"] = "done"

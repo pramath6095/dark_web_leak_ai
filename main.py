@@ -231,14 +231,6 @@ def main():
     contact_count = sum(len(v) for contacts in all_contacts.values() for v in contacts.values())
     print(f"[+] Extracted {contact_count} threat actor contacts from {len(all_contacts)} pages")
     
-    # save IOCs + contacts combined
-    if all_iocs or all_contacts:
-        ioc_text = format_iocs_summary(all_iocs, all_contacts)
-        os.makedirs("output", exist_ok=True)
-        with open("output/iocs.txt", "w", encoding="utf-8") as f:
-            f.write(ioc_text)
-        print(f"[+] IOCs + contacts saved to output/iocs.txt")
-    
     file_analysis = {}
     file_verdicts = {}
     company_categories = {}
@@ -261,7 +253,16 @@ def main():
             print(f"[+] Categorization results:")
             print(f"    Company-Specific: {cs_count}")
             print(f"    General: {gen_count}")
-        
+
+    # save IOCs + contacts (after company categorization if AI enabled)
+    if all_iocs or all_contacts:
+        ioc_text = format_iocs_summary(all_iocs, all_contacts, company_categories=company_categories or None)
+        os.makedirs("output", exist_ok=True)
+        with open("output/iocs.txt", "w", encoding="utf-8") as f:
+            f.write(ioc_text)
+        print(f"[+] IOCs + contacts saved to output/iocs.txt")
+
+    if use_ai and success > 0:
         # ==========================================
         # STEP 5.5: AI THREAT CLASSIFICATION
         # ==========================================

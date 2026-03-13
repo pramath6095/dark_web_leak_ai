@@ -1080,13 +1080,21 @@ If none, write "No company-specific evidence found."
 |---|---|---|---|---|
 List pages marked GENERAL. Same column rules as above.
 
-### IOCs (Indicators of Compromise)
+### IOCs (Indicators of Compromise) — Company-Specific
 | Type | Value | Source | Context |
 |---|---|---|---|
-Use the pre-extracted IOCs. Prioritize: emails, crypto wallets, credential dumps, onion URLs.
+List IOCs extracted from COMPANY-SPECIFIC pages only.
+Prioritize: emails, crypto wallets, credential dumps, onion URLs.
 SKIP domains from breach catalog listings (hundreds of .com domains = catalog noise, not IOCs).
-Max 15 rows. Include context for each IOC explaining its significance.
+Max 10 rows. Include context for each IOC explaining its significance.
 "Source" = shortened source domain (max 25 chars).
+If none, write "No company-specific IOCs found."
+
+### IOCs (Indicators of Compromise) — General
+| Type | Value | Source | Context |
+|---|---|---|---|
+List IOCs from GENERAL (non-target-specific) dark web pages.
+Same rules as above. Max 10 rows.
 
 CRITICAL RULES:
 - NO raw HTML/boilerplate in any output (no "JavaScript is Disabled", no "Menu Log in Register")
