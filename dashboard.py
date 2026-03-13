@@ -120,17 +120,24 @@ def _run_pipeline(job_id: str, query: str, config: dict):
             if _check_abort(job_id): raise InterruptedError("Aborted")
 
             with _job_lock:
+                _jobs[job_id]["progress"] = "categorizing"
+
+            from ai_engine import categorize_company_relevance, classify_threats, generate_summary
+            company_categories = categorize_company_relevance(query, scraped_data)
+
+            if _check_abort(job_id): raise InterruptedError("Aborted")
+
+            with _job_lock:
                 _jobs[job_id]["progress"] = "classifying"
 
-            from ai_engine import classify_threats, generate_summary
-            classifications = classify_threats(query, scraped_data)
+            classifications = classify_threats(query, scraped_data, company_categories=company_categories)
 
             if _check_abort(job_id): raise InterruptedError("Aborted")
 
             with _job_lock:
                 _jobs[job_id]["progress"] = "summarizing"
 
-            summary = generate_summary(query, scraped_data, classifications, regex_iocs=all_iocs, actor_contacts=all_contacts)
+            summary = generate_summary(query, scraped_data, classifications, regex_iocs=all_iocs, actor_contacts=all_contacts, company_categories=company_categories)
 
             os.makedirs("output", exist_ok=True)
             with open("output/summary.txt", "w", encoding="utf-8") as f:
@@ -505,7 +512,7 @@ const runBtn = document.getElementById('run-btn');
 let pollInterval = null;
 let currentJobId = null;
 
-const STEPS = ['searching','filtering','scraping','classifying','summarizing'];
+const STEPS = ['searching','filtering','scraping','categorizing','classifying','summarizing'];
 
 function setButtonRun() {
   runBtn.textContent = 'Run Pipeline';

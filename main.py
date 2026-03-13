@@ -241,22 +241,61 @@ def main():
     
     file_analysis = {}
     file_verdicts = {}
-    company_verdicts = {}
+    company_categories = {}
     
     if use_ai and success > 0:
         # ==========================================
-        # STEP 5: AI THREAT CLASSIFICATION
+        # STEP 5: COMPANY CATEGORIZATION
         # ==========================================
         print("\n" + "-" * 50)
-        print("STEP 5: AI THREAT CLASSIFICATION")
+        print("STEP 5: COMPANY CATEGORIZATION")
+        print("-" * 50)
+        
+        from ai_engine import categorize_company_relevance
+        print(f"[*] Checking {success} pages for company relevance to \"{query}\"...")
+        company_categories = categorize_company_relevance(query, scraped_data)
+        
+        if company_categories:
+            cs_count = sum(1 for v in company_categories.values() if v == "company_specific")
+            gen_count = sum(1 for v in company_categories.values() if v == "general")
+            print(f"[+] Categorization results:")
+            print(f"    Company-Specific: {cs_count}")
+            print(f"    General: {gen_count}")
+        
+        # ==========================================
+        # STEP 5.5: AI THREAT CLASSIFICATION
+        # ==========================================
+        print("\n" + "-" * 50)
+        print("STEP 5.5: AI THREAT CLASSIFICATION")
         print("-" * 50)
         
         from ai_engine import classify_threats
         print(f"[*] Classifying {success} scraped pages...")
-        classifications = classify_threats(query, scraped_data)
+        classifications = classify_threats(query, scraped_data, company_categories=company_categories)
         
         if classifications:
-            # print classification summary
+            # print classification summary grouped by company relevance
+            cs_cls = {u: c for u, c in classifications.items() if c.get("company_relevance") == "company_specific"}
+            gen_cls = {u: c for u, c in classifications.items() if c.get("company_relevance") != "company_specific"}
+            
+            if cs_cls:
+                print(f"\n  [COMPANY-SPECIFIC] ({len(cs_cls)} pages):")
+                cs_cats = {}
+                for cls in cs_cls.values():
+                    cat = cls.get("category", "other")
+                    cs_cats[cat] = cs_cats.get(cat, 0) + 1
+                for cat, count in sorted(cs_cats.items(), key=lambda x: -x[1]):
+                    print(f"    {cat}: {count}")
+            
+            if gen_cls:
+                print(f"\n  [GENERAL] ({len(gen_cls)} pages):")
+                gen_cats = {}
+                for cls in gen_cls.values():
+                    cat = cls.get("category", "other")
+                    gen_cats[cat] = gen_cats.get(cat, 0) + 1
+                for cat, count in sorted(gen_cats.items(), key=lambda x: -x[1]):
+                    print(f"    {cat}: {count}")
+            
             cat_counts = {}
             sev_counts = {}
             for cls in classifications.values():
@@ -265,10 +304,7 @@ def main():
                 cat_counts[cat] = cat_counts.get(cat, 0) + 1
                 sev_counts[sev] = sev_counts.get(sev, 0) + 1
             
-            print(f"[+] Classified {len(classifications)} pages:")
-            for cat, count in sorted(cat_counts.items(), key=lambda x: -x[1]):
-                print(f"    {cat}: {count}")
-            print(f"[+] Severity breakdown:")
+            print(f"\n[+] Severity breakdown:")
             for sev in ["critical", "high", "medium", "low"]:
                 if sev in sev_counts:
                     print(f"    {sev}: {sev_counts[sev]}")
@@ -327,59 +363,15 @@ def main():
                 traceback.print_exc()
         
         # ==========================================
-        # STEP 5.9: COMPANY RELEVANCE VERIFICATION
-        # ==========================================
-        company_verdicts = {}
-        if classifications and scraped_data:
-            print("\n" + "-" * 50)
-            print("STEP 5.9: COMPANY/TARGET VERIFICATION")
-            print("-" * 50)
-            
-            from ai_engine import verify_company_relevance
-            print(f"[*] Verifying relevance to target: \"{query}\"...")
-            company_verdicts = verify_company_relevance(query, scraped_data, classifications)
-            
-            if company_verdicts:
-                rel_counts = {}
-                for v in company_verdicts.values():
-                    r = v.get('relevance', 'generic')
-                    rel_counts[r] = rel_counts.get(r, 0) + 1
-                
-                print(f"[+] Target relevance breakdown:")
-                for r, count in sorted(rel_counts.items(), key=lambda x: -x[1]):
-                    label = {
-                        'confirmed': 'CONFIRMED (target-specific)',
-                        'likely': 'LIKELY (probable match)',
-                        'generic': 'GENERIC (cannot confirm)',
-                        'unrelated': 'UNRELATED',
-                    }.get(r, r)
-                    print(f"    {label}: {count}")
-                
-                # save company verification report
-                os.makedirs("output", exist_ok=True)
-                with open("output/company_verification.txt", "w", encoding="utf-8") as f:
-                    f.write("=" * 60 + "\n")
-                    f.write(f"COMPANY/TARGET VERIFICATION REPORT\n")
-                    f.write(f"Target: \"{query}\"\n")
-                    f.write("=" * 60 + "\n\n")
-                    for url, v in company_verdicts.items():
-                        f.write(f"{'─' * 60}\n")
-                        f.write(f"URL: {url[:80]}\n")
-                        f.write(f"  Relevance: {v['relevance'].upper()}\n")
-                        f.write(f"  Confidence: {v['confidence']}\n")
-                        f.write(f"  Reasoning: {v['reasoning']}\n\n")
-                print(f"[+] Saved to output/company_verification.txt")
-        
-        # ==========================================
-        # STEP 6: AI INTELLIGENCE SUMMARY
+        # STEP 7: AI INTELLIGENCE SUMMARY
         # ==========================================
         print("\n" + "-" * 50)
-        print("STEP 6: AI INTELLIGENCE SUMMARY")
+        print("STEP 7: AI INTELLIGENCE SUMMARY")
         print("-" * 50)
         
         from ai_engine import generate_summary
         print("[*] Generating incident response brief...")
-        summary = generate_summary(query, scraped_data, classifications, regex_iocs=all_iocs, actor_contacts=all_contacts)
+        summary = generate_summary(query, scraped_data, classifications, regex_iocs=all_iocs, actor_contacts=all_contacts, company_categories=company_categories)
         save_summary(summary)
     
     # ==========================================
@@ -410,17 +402,15 @@ def main():
         confirmed = sum(1 for v in file_verdicts.values() if v.get('verdict') == 'confirmed_threat')
         print(f"  - Files Analyzed: {len(file_analysis)}")
         print(f"  - Confirmed Threats: {confirmed}")
-    if company_verdicts:
-        target_specific = sum(1 for v in company_verdicts.values() if v.get('relevance') in ('confirmed', 'likely'))
-        generic = sum(1 for v in company_verdicts.values() if v.get('relevance') == 'generic')
-        print(f"  - Target-Specific: {target_specific}")
-        print(f"  - Generic/Unattributed: {generic}")
+    if company_categories:
+        target_specific = sum(1 for v in company_categories.values() if v == 'company_specific')
+        generic = sum(1 for v in company_categories.values() if v == 'general')
+        print(f"  - Company-Specific: {target_specific}")
+        print(f"  - General: {generic}")
     print(f"  - Output:")
     print(f"      results.txt, scraped_data.txt, iocs.txt")
     if file_analysis:
         print(f"      file_analysis.txt")
-    if company_verdicts:
-        print(f"      company_verification.txt")
     if use_ai and success > 0:
         print(f"      summary.txt")
     print("=" * 50 + "\n")
