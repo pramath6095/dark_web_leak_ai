@@ -602,8 +602,9 @@ login portals, generic marketplaces, porn sites,
 advertisement pages, or wiki link lists.
 
 Step 5 — RANKING
-You MUST select exactly {limit} results (or as many as there correspond to leaked data). Do NOT artificially limit your response to 10 results. 
-If fewer than {limit} relevant results exist, return only those relevant results.
+Select up to {limit} results that most strongly indicate
+leaked data or breach information. If fewer than {limit}
+relevant results exist, return only those relevant results.
 
 OUTPUT RULES
 Return ONLY the result numbers (from the # column).
