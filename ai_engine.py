@@ -1041,23 +1041,6 @@ Do NOT just use "other" — analyze what each page actually contains and assign 
 "Key Indicator" = the single most important phrase proving this categorization (max 40 chars).
 Include ALL categories found — do not combine or omit.
 
-### Key Findings — Company-Specific
-List findings that are SPECIFICALLY about "{query}" (marked as COMPANY-SPECIFIC in the data above).
-For each finding:
-1. **[Finding Title]** — Describe what was found with specifics: names, numbers, prices, data types, volumes.
-   - *Evidence*: Direct quote or data point extracted from the scraped content (max 80 chars)
-   - *Source*: Which URL or page type this was found on (1 line)
-   - *Impact*: Why this matters for the organization and what risk it poses (1-2 lines)
-If no company-specific findings exist, write "No findings directly attributable to the target."
-
-### Key Findings — General Dark Web
-List findings from GENERAL (non-target-specific) dark web data.
-For each finding:
-1. **[Finding Title]** — Describe what was found with specifics.
-   - *Evidence*: Direct quote or data point (max 80 chars)
-   - *Source*: Which URL or page type (1 line)
-   - *Impact*: Broader threat landscape relevance (1-2 lines)
-
 ### Threat Actors
 | Handle/Contact | Platform | Offering/Activity | Context |
 |---|---|---|---|
@@ -1066,7 +1049,24 @@ Use the "Threat Actor Contacts" data above. Identify WHO is selling/offering WHA
 Include ALL identified threat actors — do not truncate this table.
 If no contacts found, write "No threat actor contacts identified in scraped pages."
 
-### Evidence Report — Company-Specific
+<div style="display: flex; gap: 24px; align-items: flex-start; flex-wrap: wrap; width: 100%; box-sizing: border-box;">
+
+<!-- LEFT COLUMN: COMPANY SPECIFIC -->
+<div style="flex: 1 1 calc(50% - 12px); min-width: 300px; max-width: 100%; box-sizing: border-box; overflow-x: auto; background: rgba(0, 200, 255, 0.03); padding: 20px; padding-top: 4px; border-radius: 10px; border: 1px solid rgba(0, 200, 255, 0.1);">
+
+<h2 style="font-size: 17px; border-bottom: none; margin-bottom: 8px; padding-bottom: 0;">🏢 Company-Specific</h2>
+<hr style="margin-top: 0; margin-bottom: 20px; border-top: 1px solid rgba(0, 200, 255, 0.2); border-bottom: none;">
+
+### Key Findings
+List findings that are SPECIFICALLY about "{query}" (marked as COMPANY-SPECIFIC in the data above).
+For each finding:
+1. **[Finding Title]** — Describe what was found with specifics: names, numbers, prices, data types, volumes.
+   - *Evidence*: Direct quote or data point extracted from the scraped content (max 80 chars)
+   - *Source*: Which URL or page type this was found on (1 line)
+   - *Impact*: Why this matters for the organization and what risk it poses (1-2 lines)
+If no company-specific findings exist, write "No findings directly attributable to the target."
+
+### Evidence Report
 | # | Type | URL | Key Finding | Severity |
 |---|---|---|---|---|
 List pages marked COMPANY-SPECIFIC. Skip dead links, error pages, and duplicates.
@@ -1075,12 +1075,7 @@ List pages marked COMPANY-SPECIFIC. Skip dead links, error pages, and duplicates
 "Severity" = critical/high/medium/low
 If none, write "No company-specific evidence found."
 
-### Evidence Report — General
-| # | Type | URL | Key Finding | Severity |
-|---|---|---|---|---|
-List pages marked GENERAL. Same column rules as above.
-
-### IOCs (Indicators of Compromise) — Company-Specific
+### Indicators of Compromise
 | Type | Value | Source | Context |
 |---|---|---|---|
 List IOCs extracted from COMPANY-SPECIFIC pages only.
@@ -1090,11 +1085,36 @@ Max 10 rows. Include context for each IOC explaining its significance.
 "Source" = the full source URL.
 If none, write "No company-specific IOCs found."
 
-### IOCs (Indicators of Compromise) — General
+</div>
+
+<!-- RIGHT COLUMN: GENERAL DARK WEB -->
+<div style="flex: 1 1 calc(50% - 12px); min-width: 300px; max-width: 100%; box-sizing: border-box; overflow-x: auto; background: rgba(255, 255, 255, 0.02); padding: 20px; padding-top: 4px; border-radius: 10px; border: 1px solid rgba(255, 255, 255, 0.08);">
+
+<h2 style="font-size: 17px; border-bottom: none; margin-bottom: 8px; padding-bottom: 0;">🌐 General Dark Web</h2>
+<hr style="margin-top: 0; margin-bottom: 20px; border-top: 1px solid rgba(255, 255, 255, 0.1); border-bottom: none;">
+
+### Key Findings
+List findings from GENERAL (non-target-specific) dark web data.
+For each finding:
+1. **[Finding Title]** — Describe what was found with specifics.
+   - *Evidence*: Direct quote or data point (max 80 chars)
+   - *Source*: Which URL or page type (1 line)
+   - *Impact*: Broader threat landscape relevance (1-2 lines)
+
+### Evidence Report
+| # | Type | URL | Key Finding | Severity |
+|---|---|---|---|---|
+List pages marked GENERAL. Same column rules as above.
+
+### Indicators of Compromise
 | Type | Value | Source | Context |
 |---|---|---|---|
 List IOCs from GENERAL (non-target-specific) dark web pages.
 Same rules as above. Max 10 rows.
+
+</div>
+
+</div>
 
 CRITICAL RULES:
 - NO raw HTML/boilerplate in any output (no "JavaScript is Disabled", no "Menu Log in Register")

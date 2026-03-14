@@ -758,15 +758,27 @@ def format_iocs_summary(all_iocs: dict, all_contacts: dict = None, company_categ
             gen_sources = [(url, iocs) for url, iocs in all_iocs.items()
                            if company_categories.get(url) != "company_specific"]
 
-            lines.append("### Company-Specific IOCs")
+            lines.append('<div style="display: flex; gap: 24px; align-items: flex-start; flex-wrap: wrap;">')
+            lines.append("")
+
+            lines.append('<!-- LEFT COLUMN: COMPANY SPECIFIC -->')
+            lines.append('<div style="flex: 1; min-width: 320px; background: rgba(0, 200, 255, 0.03); padding: 20px; padding-top: 1px; border-radius: 10px; border: 1px solid rgba(0, 200, 255, 0.1);">')
+            lines.append("### 🏢 Company-Specific IOCs")
             lines.append("")
             _render_source_group(cs_sources, "company-specific")
+            lines.append("</div>")
 
-            lines.append("---")
             lines.append("")
-            lines.append("### General Dark Web IOCs")
+            lines.append('<!-- RIGHT COLUMN: GENERAL DARK WEB -->')
+            lines.append('<div style="flex: 1; min-width: 320px; background: rgba(255, 255, 255, 0.02); padding: 20px; padding-top: 1px; border-radius: 10px; border: 1px solid rgba(255, 255, 255, 0.08);">')
+            lines.append("### 🌐 General Dark Web IOCs")
             lines.append("")
             _render_source_group(gen_sources, "general")
+            lines.append("</div>")
+
+            lines.append("")
+            lines.append("</div> <!-- END FLEXBOX WRAPPER -->")
+            lines.append("")
         else:
             _render_source_group(list(all_iocs.items()))
 

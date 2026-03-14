@@ -212,7 +212,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .header p { color: var(--muted); font-size: 11px; margin-top: 2px; letter-spacing: 0.04em; text-transform: uppercase; }
 
   /* LAYOUT */
-  .container { max-width: 1100px; margin: 0 auto; padding: 28px 24px; }
+  .container { max-width: 95vw; margin: 0 auto; padding: 28px 24px; }
 
   /* CARDS */
   .card {
@@ -791,8 +791,26 @@ async function loadOllamaModels() {
   }
 }
 
-// Load files on page open
+// ── Load persisted summary on page open ─────────────────
+async function loadLastSummary() {
+  try {
+    const res = await fetch('/last-summary');
+    if (!res.ok) return;
+    const data = await res.json();
+    if (data.summary) {
+      statusDiv.style.display = 'block';
+      renderJobDone({
+        results_count: data.urls_found || 0,
+        scraped_count: data.pages_scraped || 0,
+        summary_preview: data.summary
+      });
+    }
+  } catch(e) { /* no persisted summary */ }
+}
+
+// Load files and last summary on page open
 loadFiles();
+loadLastSummary();
 </script>
 </body>
 </html>"""
@@ -888,6 +906,41 @@ def abort_job(job_id):
             return jsonify({"error": "job already finished"}), 400
         job["abort"] = True
     return jsonify({"status": "abort_requested"})
+
+
+@app.route("/last-summary")
+def last_summary():
+    """return persisted summary + stats from output files if they exist"""
+    summary_path = os.path.join("output", "summary.txt")
+    if not os.path.isfile(summary_path):
+        return jsonify({}), 204
+
+    with open(summary_path, "r", encoding="utf-8") as f:
+        summary_text = f.read()
+
+    # try to count URLs from results.txt
+    urls_found = 0
+    results_path = os.path.join("output", "results.txt")
+    if os.path.isfile(results_path):
+        with open(results_path, "r", encoding="utf-8") as f:
+            for line in f:
+                if line.strip().startswith("|") and not line.strip().startswith("| #") and not line.strip().startswith("|--"):
+                    urls_found += 1
+
+    # try to count scraped pages from scraped_data.txt
+    pages_scraped = 0
+    scraped_path = os.path.join("output", "scraped_data.txt")
+    if os.path.isfile(scraped_path):
+        with open(scraped_path, "r", encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("URL:"):
+                    pages_scraped += 1
+
+    return jsonify({
+        "summary": summary_text,
+        "urls_found": urls_found,
+        "pages_scraped": pages_scraped
+    })
 
 
 @app.route("/ollama/models")
