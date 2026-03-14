@@ -551,7 +551,7 @@ INPUT: {query}"""
 # STAGE 2: RESULT FILTERING
 # ============================================================
 
-def filter_results(query: str, results: list, limit: int = 20) -> list:
+def filter_results(query: str, results: list, limit: int) -> list:
     """
     stage 2: use llm to pick the top `limit` most relevant search results.
     results format: list of dicts with {url, title}
