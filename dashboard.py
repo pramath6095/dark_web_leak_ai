@@ -34,8 +34,11 @@ _auto_lock = threading.Lock()
 def _load_auto_settings():
     """load automation settings from disk"""
     if os.path.isfile(_AUTO_SETTINGS_FILE):
-        with open(_AUTO_SETTINGS_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+        try:
+            with open(_AUTO_SETTINGS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, ValueError):
+            pass
     return {"enabled": False, "interval_hours": 6, "webhook_url": ""}
 
 
@@ -49,8 +52,11 @@ def _save_auto_settings(settings):
 def _load_alerts():
     """load alerts history from disk"""
     if os.path.isfile(_ALERTS_FILE):
-        with open(_ALERTS_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+        try:
+            with open(_ALERTS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, ValueError):
+            pass
     return []
 
 
@@ -80,9 +86,19 @@ def _add_alert(severity, title, evidence="", category=""):
 
 
 def _generate_alerts_from_classifications(query, classifications, company_categories):
-    """extract company-specific key findings from classifications and add as alerts"""
+    """extract company-specific key findings from classifications and add as alerts.
+    deduplicates against existing alerts to avoid showing the same finding twice."""
     if not classifications:
         return
+
+    # build dedup fingerprints from existing alerts: (category, evidence_lowercase)
+    existing_alerts = _load_alerts()
+    existing_fingerprints = set()
+    for a in existing_alerts:
+        cat = a.get("category", "")
+        ev = a.get("evidence", "").strip().lower()
+        if cat and ev:
+            existing_fingerprints.add((cat, ev))
 
     # filter for company-specific pages
     cs_findings = []
@@ -110,20 +126,36 @@ def _generate_alerts_from_classifications(query, classifications, company_catego
 
     # sort by severity: critical > high > medium > low
     sev_order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
-    cs_findings.sort(key=lambda x: sev_order.get(x.get("severity", "low"), 3))
+    findings_to_alert.sort(key=lambda x: sev_order.get(x.get("severity", "low"), 3))
 
-    # add individual alerts for the top findings (max 5)
-    for finding in cs_findings[:5]:
-        sev = finding.get("severity", "medium")
+    # add individual alerts for the top findings (max 5), skipping duplicates
+    added = 0
+    for finding in findings_to_alert:
+        if added >= 5:
+            break
+
         cat = finding.get("category", "other")
         evidence = finding.get("evidence", "")
+        fingerprint = (cat, evidence.strip().lower())
+
+        # skip if this exact (category, evidence) already exists
+        if fingerprint in existing_fingerprints:
+            continue
+
+        sev = finding.get("severity", "medium")
         reason = finding.get("reason", "")
 
-        # map severity to alert severity
         alert_sev = "critical" if sev in ("critical", "high") else "medium"
         title = f"{cat.replace('_', ' ').title()}: {reason}" if reason else f"{cat.replace('_', ' ').title()} detected"
 
         _add_alert(alert_sev, title, evidence, category=cat)
+        existing_fingerprints.add(fingerprint)
+        added += 1
+
+    if added == 0:
+        # all findings were duplicates — log a quiet heartbeat
+        _add_alert("clear", f"Scan complete for \"{query}\"",
+                   f"No new findings. {len(findings_to_alert)} findings already tracked.")
 
 
 def _schedule_next_run():
