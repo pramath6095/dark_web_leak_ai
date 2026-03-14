@@ -17,6 +17,9 @@ except ImportError:
 
 app = Flask(__name__)
 
+from search import SEARCH_ENGINES
+MAX_ENGINES = len(SEARCH_ENGINES)
+
 # job tracking
 _jobs = {}
 _job_lock = threading.Lock()
@@ -47,7 +50,7 @@ def _run_pipeline(job_id: str, query: str, config: dict):
 
         use_ai = config.get("use_ai", True)
         ai_provider = config.get("ai_provider", "gemini")
-        num_engines = config.get("num_engines", 16)
+        num_engines = config.get("num_engines", MAX_ENGINES)
         scrape_limit = config.get("scrape_limit", 10)
         threads = config.get("threads", 3)
         depth = config.get("depth", 1)
@@ -69,7 +72,7 @@ def _run_pipeline(job_id: str, query: str, config: dict):
         if use_ai:
             from ai_engine import refine_query
             keywords = refine_query(query)
-            search_queries = keywords + [query]
+            search_queries = [query] + keywords
 
         all_results = []
         seen_urls = set()
@@ -437,7 +440,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       <label>Search Query</label>
       <input type="text" id="query" placeholder="e.g. company data breach, leaked credentials…" required>
       <div class="row">
-        <div><label>Engines</label><input type="number" id="engines" value="16" min="1" max="16"></div>
+        <div><label>Engines</label><input type="number" id="engines" value="__MAX_ENGINES__" min="1" max="__MAX_ENGINES__"></div>
         <div><label>Scrape Limit</label><input type="number" id="limit" value="10" min="1" max="50"></div>
         <div><label>Threads</label><input type="number" id="threads" value="3" min="1" max="10"></div>
       </div>
@@ -801,7 +804,7 @@ loadFiles();
 
 @app.route("/")
 def index():
-    return DASHBOARD_HTML
+    return DASHBOARD_HTML.replace("__MAX_ENGINES__", str(MAX_ENGINES))
 
 
 @app.route("/run", methods=["POST"])
@@ -816,7 +819,7 @@ def run_pipeline():
         "use_ai":        data.get("use_ai", True),
         "ai_provider":   data.get("ai_provider", "gemini"),
         "ollama_model":  data.get("ollama_model", ""),
-        "num_engines":   data.get("num_engines", 16),
+        "num_engines":   data.get("num_engines", MAX_ENGINES),
         "scrape_limit":  data.get("scrape_limit", 10),
         "threads":       data.get("threads", 3),
         "depth":         data.get("depth", 1),
