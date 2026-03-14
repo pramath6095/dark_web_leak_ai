@@ -24,6 +24,180 @@ MAX_ENGINES = len(SEARCH_ENGINES)
 _jobs = {}
 _job_lock = threading.Lock()
 
+# automation state
+_AUTO_SETTINGS_FILE = os.path.join("output", "automation_settings.json")
+_ALERTS_FILE = os.path.join("output", "alerts.json")
+_auto_timer = None  # reference to the scheduler timer
+_auto_lock = threading.Lock()
+
+
+def _load_auto_settings():
+    """load automation settings from disk"""
+    if os.path.isfile(_AUTO_SETTINGS_FILE):
+        with open(_AUTO_SETTINGS_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {"enabled": False, "interval_hours": 6, "webhook_url": ""}
+
+
+def _save_auto_settings(settings):
+    """persist automation settings to disk"""
+    os.makedirs("output", exist_ok=True)
+    with open(_AUTO_SETTINGS_FILE, "w", encoding="utf-8") as f:
+        json.dump(settings, f, indent=2)
+
+
+def _load_alerts():
+    """load alerts history from disk"""
+    if os.path.isfile(_ALERTS_FILE):
+        with open(_ALERTS_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return []
+
+
+def _save_alerts(alerts):
+    """persist alerts to disk"""
+    os.makedirs("output", exist_ok=True)
+    with open(_ALERTS_FILE, "w", encoding="utf-8") as f:
+        json.dump(alerts, f, indent=2)
+
+
+def _add_alert(severity, title, evidence="", category=""):
+    """append a new alert to the alerts history"""
+    alerts = _load_alerts()
+    entry = {
+        "timestamp": datetime.now().strftime("%b %d, %I:%M %p"),
+        "severity": severity,
+        "title": title,
+        "evidence": evidence[:500] if evidence else "",
+    }
+    if category:
+        entry["category"] = category
+    alerts.insert(0, entry)
+    # keep latest 50 alerts
+    alerts = alerts[:50]
+    _save_alerts(alerts)
+    return alerts
+
+
+def _generate_alerts_from_classifications(query, classifications, company_categories):
+    """extract company-specific key findings from classifications and add as alerts"""
+    if not classifications:
+        return
+
+    # filter for company-specific pages
+    cs_findings = []
+    general_findings = []
+    for url, cls in classifications.items():
+        relevance = "general"
+        if company_categories:
+            relevance = cls.get("company_relevance", company_categories.get(url, "general"))
+        if relevance == "company_specific":
+            cs_findings.append(cls)
+        else:
+            general_findings.append(cls)
+
+    # use company-specific if available, otherwise fall back to all high/critical findings
+    if cs_findings:
+        findings_to_alert = cs_findings
+    else:
+        # no company-specific: show high/critical general findings
+        findings_to_alert = [f for f in general_findings if f.get("severity") in ("critical", "high")]
+
+    if not findings_to_alert:
+        _add_alert("clear", f"Scan complete for \"{query}\"",
+                   f"Scanned {len(classifications)} pages. No high-severity threats found.")
+        return
+
+    # sort by severity: critical > high > medium > low
+    sev_order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+    cs_findings.sort(key=lambda x: sev_order.get(x.get("severity", "low"), 3))
+
+    # add individual alerts for the top findings (max 5)
+    for finding in cs_findings[:5]:
+        sev = finding.get("severity", "medium")
+        cat = finding.get("category", "other")
+        evidence = finding.get("evidence", "")
+        reason = finding.get("reason", "")
+
+        # map severity to alert severity
+        alert_sev = "critical" if sev in ("critical", "high") else "medium"
+        title = f"{cat.replace('_', ' ').title()}: {reason}" if reason else f"{cat.replace('_', ' ').title()} detected"
+
+        _add_alert(alert_sev, title, evidence, category=cat)
+
+
+def _schedule_next_run():
+    """schedule the next automated pipeline run based on saved settings"""
+    global _auto_timer
+    with _auto_lock:
+        # cancel any existing timer
+        if _auto_timer is not None:
+            _auto_timer.cancel()
+            _auto_timer = None
+
+        settings = _load_auto_settings()
+        if not settings.get("enabled"):
+            return
+
+        interval_secs = settings.get("interval_hours", 6) * 3600
+        _auto_timer = threading.Timer(interval_secs, _auto_run)
+        _auto_timer.daemon = True
+        _auto_timer.start()
+        print(f"[AUTOMATION] Next run scheduled in {settings.get('interval_hours', 6)}h")
+
+
+def _auto_run():
+    """execute one automated pipeline run and generate alerts"""
+    settings = _load_auto_settings()
+    if not settings.get("enabled"):
+        return
+
+    # use the last query from the most recent job, or a default
+    last_query = ""
+    with _job_lock:
+        for jid in sorted(_jobs.keys(), reverse=True):
+            last_query = _jobs[jid].get("query", "")
+            if last_query:
+                break
+
+    if not last_query:
+        _add_alert("info", "Automation skipped", "No query configured. Run a manual pipeline first.")
+        _schedule_next_run()
+        return
+
+    print(f"[AUTOMATION] Starting automated run for: {last_query}")
+
+    job_id = f"auto_{int(time.time())}_{os.getpid()}"
+    config = {
+        "use_ai": True,
+        "ai_provider": "gemini",
+        "ollama_model": "",
+        "num_engines": MAX_ENGINES,
+        "scrape_limit": 10,
+        "threads": 3,
+        "depth": 1,
+        "max_pages": 1,
+    }
+
+    with _job_lock:
+        _jobs[job_id] = {
+            "status": "queued",
+            "query": last_query,
+            "config": config,
+            "created": time.time(),
+            "automated": True,
+        }
+
+    try:
+        _run_pipeline(job_id, last_query, config)
+        # alerts are now generated inside _run_pipeline via _generate_alerts_from_classifications
+
+    except Exception as e:
+        _add_alert("medium", "Automated run failed", str(e)[:300])
+
+    # schedule the next run
+    _schedule_next_run()
+
 
 def _check_abort(job_id: str) -> bool:
     """check if a job has been flagged for abort"""
@@ -129,6 +303,9 @@ def _run_pipeline(job_id: str, query: str, config: dict):
                 _jobs[job_id]["progress"] = "classifying"
 
             classifications = classify_threats(query, scraped_data, company_categories=company_categories)
+
+            # generate alerts from company-specific classifications
+            _generate_alerts_from_classifications(query, classifications, company_categories)
 
             if _check_abort(job_id): raise InterruptedError("Aborted")
 
@@ -418,6 +595,68 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     transition: all 0.2s ease;
   }
   .show-toggle:hover { color: var(--text); border-color: #3a3a3a; background: rgba(255,255,255,0.04); }
+
+  /* ── 3-COLUMN DASHBOARD GRID ── */
+  .dashboard-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 24px;
+    margin-bottom: 24px;
+  }
+  .dashboard-grid > .card { display: flex; flex-direction: column; height: 100%; margin-bottom: 0; }
+
+  /* ── TOGGLE SWITCH ── */
+  .toggle-switch { position: relative; display: inline-block; width: 44px; height: 24px; }
+  .toggle-switch input { opacity: 0; width: 0; height: 0; }
+  .slider-toggle {
+    position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0;
+    background-color: var(--surface2); transition: .4s; border-radius: 24px;
+    border: 1px solid var(--border);
+  }
+  .slider-toggle:before {
+    position: absolute; content: ""; height: 16px; width: 16px; left: 3px; bottom: 3px;
+    background-color: var(--muted); transition: .4s; border-radius: 50%;
+  }
+  input:checked + .slider-toggle { background-color: var(--accent); border-color: var(--accent); }
+  input:checked + .slider-toggle:before { transform: translateX(20px); background-color: #000; }
+
+  /* ── ALERTS LIST ── */
+  .alerts-list { display: flex; flex-direction: column; gap: 10px; overflow-y: auto; flex: 1; margin-top: 10px; max-height: 420px; }
+  .alert-item { background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; padding: 14px; }
+  .alert-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 4px; }
+  .alert-time { font-size: 11px; color: var(--muted); margin-bottom: 4px; }
+  .alert-title { font-size: 13px; font-weight: 600; color: var(--text); }
+  .evidence-box {
+    background: rgba(0,0,0,0.3); border-left: 2px solid var(--danger); padding: 8px 12px;
+    border-radius: 4px; font-family: var(--mono); font-size: 11px; color: #f87171;
+    margin-top: 8px; max-height: 80px; overflow-y: auto; white-space: pre-wrap; line-height: 1.5;
+  }
+  .evidence-box.warning { border-left-color: var(--warning); color: #fbbf24; }
+  .cat-tag {
+    display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 10px;
+    font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; margin-right: 6px;
+    background: rgba(34,211,238,0.12); color: var(--accent); border: 1px solid rgba(34,211,238,0.25);
+  }
+  .cat-tag.data_breach { background: rgba(239,68,68,0.12); color: #f87171; border-color: rgba(239,68,68,0.3); }
+  .cat-tag.credentials { background: rgba(245,158,11,0.12); color: #fbbf24; border-color: rgba(245,158,11,0.3); }
+  .cat-tag.malware { background: rgba(168,85,247,0.12); color: #c084fc; border-color: rgba(168,85,247,0.3); }
+  .cat-tag.market_listing { background: rgba(16,185,129,0.12); color: #34d399; border-color: rgba(16,185,129,0.3); }
+  .cat-tag.paste { background: rgba(100,116,139,0.15); color: #94a3b8; border-color: rgba(100,116,139,0.3); }
+  .btn-secondary {
+    background: var(--surface2); color: var(--text); border: 1px solid var(--border);
+    width: 100%; margin-top: 10px;
+  }
+  .btn-secondary:hover { background: rgba(255,255,255,0.05); }
+
+  /* ── AUTO STATUS PILL IN HEADER ── */
+  .auto-status-pill {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 16px; border-radius: 20px; font-size: 12px; font-weight: 500;
+  }
+  .auto-status-pill.active { background: rgba(16,185,129,0.15); border: 1px solid rgba(16,185,129,0.3); color: var(--success); }
+  .auto-status-pill.inactive { background: rgba(100,116,139,0.15); border: 1px solid var(--border); color: var(--muted); }
+  .status-dot-sm { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+  .status-dot-sm.pulse { box-shadow: 0 0 6px currentColor; animation: pulse 1.2s ease-in-out infinite; }
 </style>
 </head>
 <body>
@@ -427,16 +666,23 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     <h1>Dark Web Leak Monitor</h1>
     <p>Threat Intelligence Pipeline</p>
   </div>
+  <div class="auto-status-pill inactive" id="auto-pill">
+    <div class="status-dot-sm"></div>
+    <span id="auto-pill-text">Automation Off</span>
+  </div>
 </div>
 <div class="container">
 
-  <!-- RUN QUERY -->
+  <!-- 3-COLUMN DASHBOARD GRID -->
+  <div class="dashboard-grid">
+
+  <!-- COLUMN 1: RUN QUERY -->
   <div class="card">
     <div class="card-header">
       <div class="h-bar"></div>
       <h2>Run Query</h2>
     </div>
-    <form id="query-form">
+    <form id="query-form" style="display:flex;flex-direction:column;flex:1">
       <label>Search Query</label>
       <input type="text" id="query" placeholder="e.g. company data breach, leaked credentials…" required>
       <div class="row">
@@ -469,9 +715,61 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         </div>
         <div></div>
       </div>
+      <div style="flex:1"></div>
       <button type="submit" id="run-btn" class="btn btn-primary">Run Pipeline</button>
     </form>
   </div>
+
+  <!-- COLUMN 2: AUTOMATION SETTINGS -->
+  <div class="card">
+    <div class="card-header">
+      <div class="h-bar" style="background:var(--accent2)"></div>
+      <h2>Automation Settings</h2>
+    </div>
+    <div style="flex:1;display:flex;flex-direction:column">
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:16px;background:rgba(255,255,255,0.03);border:1px solid var(--border);border-radius:10px;margin-bottom:20px">
+        <div>
+          <div style="color:var(--text);font-weight:600;font-size:14px">Enable Automation</div>
+          <div style="font-size:12px;color:var(--muted);margin-top:4px">Run current query on schedule</div>
+        </div>
+        <label class="toggle-switch">
+          <input type="checkbox" id="auto-enabled">
+          <span class="slider-toggle"></span>
+        </label>
+      </div>
+      <label>Monitor Interval</label>
+      <select id="auto-interval" style="margin-bottom:16px">
+        <option value="1">Every 1 Hour</option>
+        <option value="6" selected>Every 6 Hours</option>
+        <option value="12">Every 12 Hours</option>
+        <option value="24">Every 24 Hours</option>
+      </select>
+      <label>Webhook URL (Discord/Slack)</label>
+      <input type="text" id="auto-webhook" placeholder="https://..." style="margin-bottom:16px">
+      <div style="flex:1"></div>
+      <div style="padding:12px;border-radius:8px;border:1px dashed var(--border);text-align:center;margin-bottom:20px">
+        <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:4px">Next Automated Run</div>
+        <div style="font-weight:600;color:var(--accent);font-size:14px" id="auto-countdown">—</div>
+      </div>
+      <button type="button" class="btn btn-secondary" onclick="saveAutoSettings()">Save Settings</button>
+    </div>
+  </div>
+
+  <!-- COLUMN 3: RECENT ALERTS -->
+  <div class="card">
+    <div class="card-header" style="margin-bottom:8px">
+      <div class="h-bar" style="background:var(--danger)"></div>
+      <h2 style="display:flex;align-items:center;justify-content:space-between;width:100%">
+        Recent Alerts
+        <span class="badge badge-error" id="alert-count-badge" style="font-size:11px;padding:2px 8px;display:none">0 New</span>
+      </h2>
+    </div>
+    <div class="alerts-list" id="alerts-list">
+      <div class="empty-state">No alerts yet. Enable automation to start monitoring.</div>
+    </div>
+  </div>
+
+  </div> <!-- END dashboard-grid -->
 
   <!-- JOB STATUS -->
   <div class="card" id="job-status">
@@ -575,12 +873,14 @@ async function pollJob(jobId) {
     currentJobId = null;
     setButtonRun();
     loadFiles();
+    loadAlerts();
   } else if (s.status === 'aborted') {
     renderJobAborted();
     clearInterval(pollInterval);
     currentJobId = null;
     setButtonRun();
     loadFiles();
+    loadAlerts();
   } else if (s.status === 'error') {
     renderJobError(s.error);
     clearInterval(pollInterval);
@@ -808,9 +1108,122 @@ async function loadLastSummary() {
   } catch(e) { /* no persisted summary */ }
 }
 
-// Load files and last summary on page open
+// ── Automation settings ───────────────────────────────────
+let autoCountdownInterval = null;
+let autoNextRunTime = null;
+
+async function loadAutoSettings() {
+  try {
+    const res = await fetch('/automation/settings');
+    const data = await res.json();
+    document.getElementById('auto-enabled').checked = data.enabled || false;
+    document.getElementById('auto-interval').value = String(data.interval_hours || 6);
+    document.getElementById('auto-webhook').value = data.webhook_url || '';
+    updateAutoPill(data.enabled);
+    if (data.enabled && data.next_run_ts) {
+      autoNextRunTime = data.next_run_ts * 1000;
+      startCountdown();
+    }
+  } catch(e) {}
+}
+
+async function saveAutoSettings() {
+  const body = {
+    enabled: document.getElementById('auto-enabled').checked,
+    interval_hours: parseInt(document.getElementById('auto-interval').value),
+    webhook_url: document.getElementById('auto-webhook').value,
+  };
+  const res = await fetch('/automation/settings', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+  const data = await res.json();
+  updateAutoPill(body.enabled);
+  if (body.enabled && data.next_run_ts) {
+    autoNextRunTime = data.next_run_ts * 1000;
+    startCountdown();
+  } else {
+    document.getElementById('auto-countdown').textContent = '—';
+    if (autoCountdownInterval) clearInterval(autoCountdownInterval);
+  }
+}
+
+function updateAutoPill(enabled) {
+  const pill = document.getElementById('auto-pill');
+  const text = document.getElementById('auto-pill-text');
+  const dot = pill.querySelector('.status-dot-sm');
+  if (enabled) {
+    pill.className = 'auto-status-pill active';
+    dot.classList.add('pulse');
+    text.textContent = 'Automation Active';
+  } else {
+    pill.className = 'auto-status-pill inactive';
+    dot.classList.remove('pulse');
+    text.textContent = 'Automation Off';
+  }
+}
+
+function startCountdown() {
+  if (autoCountdownInterval) clearInterval(autoCountdownInterval);
+  function tick() {
+    const el = document.getElementById('auto-countdown');
+    if (!autoNextRunTime) { el.textContent = '—'; return; }
+    const diff = autoNextRunTime - Date.now();
+    if (diff <= 0) { el.textContent = 'Running now…'; return; }
+    const h = Math.floor(diff / 3600000);
+    const m = Math.floor((diff % 3600000) / 60000);
+    const s = Math.floor((diff % 60000) / 1000);
+    el.textContent = `In ${h}h ${m}m ${s}s`;
+  }
+  tick();
+  autoCountdownInterval = setInterval(tick, 1000);
+}
+
+// ── Alerts ────────────────────────────────────────────────
+async function loadAlerts() {
+  try {
+    const res = await fetch('/automation/alerts');
+    const alerts = await res.json();
+    const el = document.getElementById('alerts-list');
+    const badge = document.getElementById('alert-count-badge');
+    if (!alerts.length) {
+      el.innerHTML = '<div class="empty-state">No alerts yet. Enable automation to start monitoring.</div>';
+      badge.style.display = 'none';
+      return;
+    }
+    badge.textContent = alerts.length + ' Total';
+    badge.style.display = '';
+    el.innerHTML = alerts.slice(0, 15).map(a => renderAlert(a)).join('');
+  } catch(e) {}
+}
+
+function renderAlert(a) {
+  const sevMap = {
+    critical: { cls: 'badge-error', border: 'var(--danger)', label: 'Critical' },
+    medium:   { cls: 'badge-running', border: 'var(--warning)', label: 'Medium' },
+    clear:    { cls: 'badge-done', border: 'var(--success)', label: 'Clear' },
+    info:     { cls: 'badge-queued', border: 'var(--muted)', label: 'Info' },
+  };
+  const sev = sevMap[a.severity] || sevMap.info;
+  const catTag = a.category
+    ? `<span class="cat-tag ${escHtml(a.category)}">${escHtml(a.category.replace(/_/g, ' '))}</span>`
+    : '';
+  const evidenceHtml = a.evidence
+    ? `<div class="evidence-box${a.severity === 'medium' ? ' warning' : ''}">${escHtml(a.evidence)}</div>`
+    : (a.severity === 'clear' ? `<div style="font-size:12px;color:var(--muted);margin-top:8px">${escHtml(a.title)}</div>` : '');
+  return `
+    <div class="alert-item" style="border-left:2px solid ${sev.border}">
+      <div class="alert-time">${escHtml(a.timestamp)}</div>
+      <div class="alert-header">
+        <div class="alert-title">${catTag}${escHtml(a.title)}</div>
+        <span class="badge ${sev.cls}"><span class="dot"></span>${sev.label}</span>
+      </div>
+      ${evidenceHtml}
+    </div>`;
+}
+
+// Load files, last summary, automation settings, and alerts on page open
 loadFiles();
 loadLastSummary();
+loadAutoSettings();
+loadAlerts();
 </script>
 </body>
 </html>"""
@@ -951,5 +1364,45 @@ def ollama_models():
     return jsonify({"models": models})
 
 
+@app.route("/automation/settings", methods=["GET"])
+def get_auto_settings():
+    """return current automation settings"""
+    settings = _load_auto_settings()
+    # compute next run timestamp if automation is active
+    if settings.get("enabled") and _auto_timer is not None:
+        # approximate: current time + remaining interval
+        interval_secs = settings.get("interval_hours", 6) * 3600
+        settings["next_run_ts"] = time.time() + interval_secs
+    return jsonify(settings)
+
+
+@app.route("/automation/settings", methods=["POST"])
+def set_auto_settings():
+    """save automation settings and reschedule"""
+    data = request.get_json()
+    settings = {
+        "enabled": data.get("enabled", False),
+        "interval_hours": data.get("interval_hours", 6),
+        "webhook_url": data.get("webhook_url", ""),
+    }
+    _save_auto_settings(settings)
+
+    # reschedule
+    _schedule_next_run()
+
+    resp = {"status": "saved"}
+    if settings["enabled"]:
+        resp["next_run_ts"] = time.time() + settings["interval_hours"] * 3600
+    return jsonify(resp)
+
+
+@app.route("/automation/alerts")
+def get_auto_alerts():
+    """return alert history"""
+    return jsonify(_load_alerts())
+
+
 if __name__ == "__main__":
+    # start automation scheduler if previously enabled
+    _schedule_next_run()
     app.run(host="0.0.0.0", port=5000, debug=True)
