@@ -1003,7 +1003,7 @@ def generate_summary(query: str, scraped_data: dict, classifications: dict, rege
                     ioc_lines.append(f"  {ioc_type}: [{len(values)} items from catalog — omitted]")
                     continue
                 for val in values[:5]:
-                    ioc_lines.append(f"  {ioc_type}: {val} [from: {url[:40]}]")
+                    ioc_lines.append(f"  {ioc_type}: {val} [from: {url}]")
         ioc_block = "\n".join(ioc_lines[:25])
 
     prompt = f"""You are a senior Cyber Threat Intelligence Analyst. Produce a comprehensive dark web OSINT report based on the intelligence data below. ANALYZE the data thoroughly — extract meaning, identify patterns, assess real threats, and provide actionable intelligence.
@@ -1067,7 +1067,7 @@ Include ALL identified threat actors — do not truncate this table.
 If no contacts found, write "No threat actor contacts identified in scraped pages."
 
 ### Evidence Report — Company-Specific
-| # | Type | URL (short) | Key Finding | Severity |
+| # | Type | URL | Key Finding | Severity |
 |---|---|---|---|---|
 List pages marked COMPANY-SPECIFIC. Skip dead links, error pages, and duplicates.
 "Type" = what this page IS (e.g., "Hacking Forum", "Data Shop", "Leak Blog", "Tutorial Thread", "Breach DB")
@@ -1076,7 +1076,7 @@ List pages marked COMPANY-SPECIFIC. Skip dead links, error pages, and duplicates
 If none, write "No company-specific evidence found."
 
 ### Evidence Report — General
-| # | Type | URL (short) | Key Finding | Severity |
+| # | Type | URL | Key Finding | Severity |
 |---|---|---|---|---|
 List pages marked GENERAL. Same column rules as above.
 
@@ -1087,7 +1087,7 @@ List IOCs extracted from COMPANY-SPECIFIC pages only.
 Prioritize: emails, crypto wallets, credential dumps, onion URLs.
 SKIP domains from breach catalog listings (hundreds of .com domains = catalog noise, not IOCs).
 Max 10 rows. Include context for each IOC explaining its significance.
-"Source" = shortened source domain (max 25 chars).
+"Source" = the full source URL.
 If none, write "No company-specific IOCs found."
 
 ### IOCs (Indicators of Compromise) — General
