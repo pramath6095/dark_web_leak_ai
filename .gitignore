@@ -42,6 +42,7 @@ output/
 
 # Test files
 test_*.py
+tests/
 
 # Docker
 .docker/

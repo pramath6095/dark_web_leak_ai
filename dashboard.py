@@ -7,6 +7,8 @@ import json
 import time
 import threading
 from datetime import datetime
+import functools
+print = functools.partial(print, flush=True)
 
 try:
     from flask import Flask, request, jsonify, Response, send_from_directory
@@ -15,9 +17,218 @@ except ImportError:
 
 app = Flask(__name__)
 
+from search import SEARCH_ENGINES
+MAX_ENGINES = len(SEARCH_ENGINES)
+
 # job tracking
 _jobs = {}
 _job_lock = threading.Lock()
+
+# automation state
+_AUTO_SETTINGS_FILE = os.path.join("output", "automation_settings.json")
+_ALERTS_FILE = os.path.join("output", "alerts.json")
+_auto_timer = None  # reference to the scheduler timer
+_auto_lock = threading.Lock()
+
+
+def _load_auto_settings():
+    """load automation settings from disk"""
+    if os.path.isfile(_AUTO_SETTINGS_FILE):
+        try:
+            with open(_AUTO_SETTINGS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, ValueError):
+            pass
+    return {"enabled": False, "interval_hours": 6, "webhook_url": ""}
+
+
+def _save_auto_settings(settings):
+    """persist automation settings to disk"""
+    os.makedirs("output", exist_ok=True)
+    with open(_AUTO_SETTINGS_FILE, "w", encoding="utf-8") as f:
+        json.dump(settings, f, indent=2)
+
+
+def _load_alerts():
+    """load alerts history from disk"""
+    if os.path.isfile(_ALERTS_FILE):
+        try:
+            with open(_ALERTS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, ValueError):
+            pass
+    return []
+
+
+def _save_alerts(alerts):
+    """persist alerts to disk"""
+    os.makedirs("output", exist_ok=True)
+    with open(_ALERTS_FILE, "w", encoding="utf-8") as f:
+        json.dump(alerts, f, indent=2)
+
+
+def _add_alert(severity, title, evidence="", category=""):
+    """append a new alert to the alerts history"""
+    alerts = _load_alerts()
+    entry = {
+        "timestamp": datetime.now().strftime("%b %d, %I:%M %p"),
+        "severity": severity,
+        "title": title,
+        "evidence": evidence[:500] if evidence else "",
+    }
+    if category:
+        entry["category"] = category
+    alerts.insert(0, entry)
+    # keep latest 50 alerts
+    alerts = alerts[:50]
+    _save_alerts(alerts)
+    return alerts
+
+
+def _generate_alerts_from_classifications(query, classifications, company_categories):
+    """extract company-specific key findings from classifications and add as alerts.
+    deduplicates against existing alerts to avoid showing the same finding twice."""
+    if not classifications:
+        return
+
+    # build dedup fingerprints from existing alerts: (category, evidence_lowercase)
+    existing_alerts = _load_alerts()
+    existing_fingerprints = set()
+    for a in existing_alerts:
+        cat = a.get("category", "")
+        ev = a.get("evidence", "").strip().lower()
+        if cat and ev:
+            existing_fingerprints.add((cat, ev))
+
+    # filter for company-specific pages
+    cs_findings = []
+    general_findings = []
+    for url, cls in classifications.items():
+        relevance = "general"
+        if company_categories:
+            relevance = cls.get("company_relevance", company_categories.get(url, "general"))
+        if relevance == "company_specific":
+            cs_findings.append(cls)
+        else:
+            general_findings.append(cls)
+
+    # use company-specific if available, otherwise fall back to all high/critical findings
+    if cs_findings:
+        findings_to_alert = cs_findings
+    else:
+        # no company-specific: show high/critical general findings
+        findings_to_alert = [f for f in general_findings if f.get("severity") in ("critical", "high")]
+
+    if not findings_to_alert:
+        _add_alert("clear", f"Scan complete for \"{query}\"",
+                   f"Scanned {len(classifications)} pages. No high-severity threats found.")
+        return
+
+    # sort by severity: critical > high > medium > low
+    sev_order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+    findings_to_alert.sort(key=lambda x: sev_order.get(x.get("severity", "low"), 3))
+
+    # add individual alerts for the top findings (max 5), skipping duplicates
+    added = 0
+    for finding in findings_to_alert:
+        if added >= 5:
+            break
+
+        cat = finding.get("category", "other")
+        evidence = finding.get("evidence", "")
+        fingerprint = (cat, evidence.strip().lower())
+
+        # skip if this exact (category, evidence) already exists
+        if fingerprint in existing_fingerprints:
+            continue
+
+        sev = finding.get("severity", "medium")
+        reason = finding.get("reason", "")
+
+        alert_sev = "critical" if sev in ("critical", "high") else "medium"
+        title = f"{cat.replace('_', ' ').title()}: {reason}" if reason else f"{cat.replace('_', ' ').title()} detected"
+
+        _add_alert(alert_sev, title, evidence, category=cat)
+        existing_fingerprints.add(fingerprint)
+        added += 1
+
+    if added == 0:
+        # all findings were duplicates — log a quiet heartbeat
+        _add_alert("clear", f"Scan complete for \"{query}\"",
+                   f"No new findings. {len(findings_to_alert)} findings already tracked.")
+
+
+def _schedule_next_run():
+    """schedule the next automated pipeline run based on saved settings"""
+    global _auto_timer
+    with _auto_lock:
+        # cancel any existing timer
+        if _auto_timer is not None:
+            _auto_timer.cancel()
+            _auto_timer = None
+
+        settings = _load_auto_settings()
+        if not settings.get("enabled"):
+            return
+
+        interval_secs = settings.get("interval_hours", 6) * 3600
+        _auto_timer = threading.Timer(interval_secs, _auto_run)
+        _auto_timer.daemon = True
+        _auto_timer.start()
+        print(f"[AUTOMATION] Next run scheduled in {settings.get('interval_hours', 6)}h")
+
+
+def _auto_run():
+    """execute one automated pipeline run and generate alerts"""
+    settings = _load_auto_settings()
+    if not settings.get("enabled"):
+        return
+
+    # use the last query from the most recent job, or a default
+    last_query = ""
+    with _job_lock:
+        for jid in sorted(_jobs.keys(), reverse=True):
+            last_query = _jobs[jid].get("query", "")
+            if last_query:
+                break
+
+    if not last_query:
+        _add_alert("info", "Automation skipped", "No query configured. Run a manual pipeline first.")
+        _schedule_next_run()
+        return
+
+    print(f"[AUTOMATION] Starting automated run for: {last_query}")
+
+    job_id = f"auto_{int(time.time())}_{os.getpid()}"
+    config = {
+        "use_ai": True,
+        "ai_provider": "gemini",
+        "ollama_model": "",
+        "num_engines": MAX_ENGINES,
+        "scrape_limit": 10,
+        "threads": 3,
+        "depth": 1,
+        "max_pages": 1,
+    }
+
+    with _job_lock:
+        _jobs[job_id] = {
+            "status": "queued",
+            "query": last_query,
+            "config": config,
+            "created": time.time(),
+            "automated": True,
+        }
+
+    try:
+        _run_pipeline(job_id, last_query, config)
+        # alerts are now generated inside _run_pipeline via _generate_alerts_from_classifications
+
+    except Exception as e:
+        _add_alert("medium", "Automated run failed", str(e)[:300])
+
+    # schedule the next run
+    _schedule_next_run()
 
 
 def _check_abort(job_id: str) -> bool:
@@ -41,11 +252,11 @@ def _run_pipeline(job_id: str, query: str, config: dict):
     try:
         from search import search_dark_web, save_results, get_urls_from_results
         from scrape import scrape_all, save_scraped_data
-        from ioc_extractor import extract_iocs_from_scraped, extract_contacts_from_scraped, format_iocs_summary, format_contacts_summary
+        from ioc_extractor import extract_iocs_from_scraped, extract_contacts_from_scraped, format_iocs_summary
 
         use_ai = config.get("use_ai", True)
         ai_provider = config.get("ai_provider", "gemini")
-        num_engines = config.get("num_engines", 16)
+        num_engines = config.get("num_engines", MAX_ENGINES)
         scrape_limit = config.get("scrape_limit", 10)
         threads = config.get("threads", 3)
         depth = config.get("depth", 1)
@@ -67,7 +278,7 @@ def _run_pipeline(job_id: str, query: str, config: dict):
         if use_ai:
             from ai_engine import refine_query
             keywords = refine_query(query)
-            search_queries = keywords + [query]
+            search_queries = [query] + keywords
 
         all_results = []
         seen_urls = set()
@@ -107,38 +318,44 @@ def _run_pipeline(job_id: str, query: str, config: dict):
         all_iocs = extract_iocs_from_scraped(scraped_data)
         all_contacts = extract_contacts_from_scraped(scraped_data)
 
-        if all_iocs:
-            ioc_text = format_iocs_summary(all_iocs)
-            os.makedirs("output", exist_ok=True)
-            with open("output/iocs.txt", "w", encoding="utf-8") as f:
-                f.write(ioc_text)
-
-        if all_contacts:
-            contacts_text = format_contacts_summary(all_contacts)
-            os.makedirs("output", exist_ok=True)
-            with open("output/contacts.txt", "w", encoding="utf-8") as f:
-                f.write(contacts_text)
-
         summary = ""
+        company_categories = {}
         if use_ai:
+            if _check_abort(job_id): raise InterruptedError("Aborted")
+
+            with _job_lock:
+                _jobs[job_id]["progress"] = "categorizing"
+
+            from ai_engine import categorize_company_relevance, classify_threats, generate_summary
+            company_categories = categorize_company_relevance(query, scraped_data)
+
             if _check_abort(job_id): raise InterruptedError("Aborted")
 
             with _job_lock:
                 _jobs[job_id]["progress"] = "classifying"
 
-            from ai_engine import classify_threats, generate_summary
-            classifications = classify_threats(query, scraped_data)
+            classifications = classify_threats(query, scraped_data, company_categories=company_categories)
+
+            # generate alerts from company-specific classifications
+            _generate_alerts_from_classifications(query, classifications, company_categories)
 
             if _check_abort(job_id): raise InterruptedError("Aborted")
 
             with _job_lock:
                 _jobs[job_id]["progress"] = "summarizing"
 
-            summary = generate_summary(query, scraped_data, classifications, regex_iocs=all_iocs, actor_contacts=all_contacts)
+            summary = generate_summary(query, scraped_data, classifications, regex_iocs=all_iocs, actor_contacts=all_contacts, company_categories=company_categories)
 
             os.makedirs("output", exist_ok=True)
             with open("output/summary.txt", "w", encoding="utf-8") as f:
                 f.write(summary)
+
+        # save IOCs + contacts (after company categorization if AI enabled)
+        if all_iocs or all_contacts:
+            ioc_text = format_iocs_summary(all_iocs, all_contacts, company_categories=company_categories or None)
+            os.makedirs("output", exist_ok=True)
+            with open("output/iocs.txt", "w", encoding="utf-8") as f:
+                f.write(ioc_text)
 
         with _job_lock:
             _jobs[job_id]["status"] = "done"
@@ -173,17 +390,17 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <style>
   :root {
-    --bg: #080b12;
-    --surface: #0e1420;
-    --surface2: #131929;
-    --border: #1e2d45;
-    --accent: #00c8ff;
-    --accent2: #7c3aed;
+    --bg: #0a0a0a;
+    --surface: #111111;
+    --surface2: #1a1a1a;
+    --border: #2a2a2a;
+    --accent: #22d3ee;
+    --accent2: #06b6d4;
     --success: #10b981;
     --warning: #f59e0b;
     --danger: #ef4444;
-    --text: #e2e8f0;
-    --muted: #64748b;
+    --text: #e4e4e7;
+    --muted: #71717a;
     --mono: 'JetBrains Mono', monospace;
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -191,17 +408,20 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
   /* HEADER */
   .header {
-    background: linear-gradient(135deg, #0a0f1e 0%, #0d1528 100%);
+    background: #0d0d0d;
     padding: 20px 32px;
     border-bottom: 1px solid var(--border);
-    display: flex; align-items: center; gap: 16px;
+    display: flex; align-items: center; gap: 14px;
   }
-  .header-icon { font-size: 28px; }
-  .header h1 { font-size: 20px; font-weight: 700; background: linear-gradient(135deg, var(--accent), var(--accent2)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
-  .header p { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .header-logo {
+    width: 10px; height: 24px; border-radius: 2px;
+    background: linear-gradient(180deg, var(--accent), var(--accent2));
+  }
+  .header h1 { font-size: 18px; font-weight: 700; color: var(--text); letter-spacing: -0.01em; }
+  .header p { color: var(--muted); font-size: 11px; margin-top: 2px; letter-spacing: 0.04em; text-transform: uppercase; }
 
   /* LAYOUT */
-  .container { max-width: 1100px; margin: 0 auto; padding: 28px 24px; }
+  .container { max-width: 95vw; margin: 0 auto; padding: 28px 24px; }
 
   /* CARDS */
   .card {
@@ -212,11 +432,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     margin-bottom: 24px;
   }
   .card-header { display: flex; align-items: center; gap: 10px; margin-bottom: 20px; }
-  .card-header h2 { font-size: 15px; font-weight: 600; color: var(--text); }
-  .card-icon { width: 32px; height: 32px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 15px; }
-  .card-icon.blue { background: rgba(0,200,255,0.12); }
-  .card-icon.purple { background: rgba(124,58,237,0.12); }
-  .card-icon.green { background: rgba(16,185,129,0.12); }
+  .card-header h2 { font-size: 14px; font-weight: 600; color: var(--text); text-transform: uppercase; letter-spacing: 0.04em; }
+  .card-header .h-bar { width: 3px; height: 18px; border-radius: 2px; background: var(--accent); flex-shrink: 0; }
 
   /* FORM */
   label { display: block; color: var(--muted); font-size: 12px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 6px; margin-top: 16px; }
@@ -236,18 +453,18 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     cursor: pointer; border: none; transition: all 0.2s; font-family: inherit;
   }
   .btn-primary {
-    background: linear-gradient(135deg, var(--accent), #0080ff);
+    background: var(--accent); 
     color: #000; width: 100%; margin-top: 20px;
   }
   .btn-primary:hover { filter: brightness(1.1); transform: translateY(-1px); }
   .btn-primary:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
   .btn-sm {
     padding: 6px 14px; font-size: 12px; border-radius: 6px;
-    background: rgba(0,200,255,0.1); color: var(--accent); border: 1px solid rgba(0,200,255,0.2);
+    background: rgba(255,255,255,0.06); color: var(--muted); border: 1px solid var(--border);
   }
-  .btn-sm:hover { background: rgba(0,200,255,0.18); }
+  .btn-sm:hover { background: rgba(255,255,255,0.10); color: var(--text); }
   .btn-abort {
-    background: linear-gradient(135deg, var(--danger), #b91c1c);
+    background: var(--danger);
     color: #fff; width: 100%; margin-top: 20px;
   }
   .btn-abort:hover { filter: brightness(1.15); transform: translateY(-1px); }
@@ -273,18 +490,21 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .summary-preview { background: var(--surface2); border: 1px solid var(--border); border-radius: 10px; padding: 16px; font-size: 13px; line-height: 1.7; color: #cbd5e1; white-space: normal; max-height: 350px; overflow-y: auto; overflow-x: auto; margin-top: 12px; }
 
   /* FILE CARDS */
-  .files-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; }
+  .files-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
   .file-card {
-    background: var(--surface2); border: 1px solid var(--border); border-radius: 12px;
-    padding: 18px; transition: border-color 0.2s, box-shadow 0.2s;
+    background: var(--surface2); border: 1px solid var(--border); border-radius: 10px;
+    padding: 16px; transition: border-color 0.2s, background 0.2s;
   }
-  .file-card:hover { border-color: rgba(0,200,255,0.3); box-shadow: 0 0 20px rgba(0,200,255,0.05); }
-  .file-card-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
-  .file-card-icon { width: 40px; height: 40px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 20px; flex-shrink: 0; }
-  .file-card-icon.summary  { background: rgba(124,58,237,0.15); }
-  .file-card-icon.iocs     { background: rgba(239,68,68,0.12); }
-  .file-card-icon.contacts { background: rgba(16,185,129,0.12); }
-  .file-card-icon.default  { background: rgba(0,200,255,0.12); }
+  .file-card:hover { border-color: #3a3a3a; background: #1e1e1e; }
+  .file-card-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+  .file-card-indicator {
+    width: 4px; height: 32px; border-radius: 2px; flex-shrink: 0;
+  }
+  .file-card-indicator.summary  { background: var(--accent); }
+  .file-card-indicator.iocs     { background: var(--danger); }
+  .file-card-indicator.contacts { background: var(--success); }
+  .file-card-indicator.results  { background: var(--warning); }
+  .file-card-indicator.default  { background: var(--muted); }
   .file-card-name { font-size: 14px; font-weight: 600; color: var(--text); }
   .file-card-size { font-size: 11px; color: var(--muted); margin-top: 2px; }
   .file-card-actions { display: flex; gap: 8px; }
@@ -296,9 +516,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   }
   .modal-overlay.open { display: flex; }
   .modal {
-    background: var(--surface); border: 1px solid var(--border); border-radius: 16px;
-    width: 100%; max-width: 1000px; max-height: 90vh; display: flex; flex-direction: column;
-    box-shadow: 0 24px 80px rgba(0,0,0,0.5);
+    background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+    width: 100%; max-width: 95vw; max-height: 95vh; display: flex; flex-direction: column;
+    box-shadow: 0 24px 80px rgba(0,0,0,0.6);
   }
   .modal-header {
     display: flex; align-items: center; justify-content: space-between;
@@ -307,12 +527,12 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .modal-title { display: flex; align-items: center; gap: 12px; }
   .modal-title h3 { font-size: 15px; font-weight: 600; }
   .modal-close {
-    width: 32px; height: 32px; border-radius: 8px; border: none;
+    width: 32px; height: 32px; border-radius: 6px; border: none;
     background: var(--surface2); color: var(--muted); font-size: 18px;
     cursor: pointer; display: flex; align-items: center; justify-content: center;
     transition: background 0.2s, color 0.2s;
   }
-  .modal-close:hover { background: rgba(239,68,68,0.15); color: var(--danger); }
+  .modal-close:hover { background: rgba(255,255,255,0.08); color: var(--text); }
   .modal-body { padding: 24px; overflow-y: auto; flex: 1; }
 
   /* CONTENT RENDERERS */
@@ -340,7 +560,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   @keyframes spin { to { transform: rotate(360deg); } }
 
   /* MARKDOWN STYLES */
-  .markdown-body { font-size: 14px; line-height: 1.6; color: #cbd5e1; font-family: 'Inter', sans-serif; max-height: 60vh; overflow-y: auto; padding-right: 12px; }
+  .markdown-body { font-size: 14px; line-height: 1.6; color: #cbd5e1; font-family: 'Inter', sans-serif; max-height: 80vh; overflow-y: auto; padding-right: 12px; }
   .markdown-body::-webkit-scrollbar { width: 8px; height: 8px; }
   .markdown-body::-webkit-scrollbar-track { background: rgba(0,0,0,0.1); border-radius: 4px; }
   .markdown-body::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 4px; }
@@ -355,37 +575,150 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .markdown-body code { background: rgba(0,0,0,0.3); padding: 2px 6px; border-radius: 4px; font-family: var(--mono); font-size: 12.5px; }
   .markdown-body pre { background: rgba(0,0,0,0.5); padding: 16px; border-radius: 8px; overflow-x: auto; margin-bottom: 16px; border: 1px solid var(--border); }
   .markdown-body pre code { background: none; padding: 0; border: none; }
-  .markdown-body table { width: 100%; border-collapse: collapse; margin-bottom: 16px; display: block; overflow-x: auto; }
+  .markdown-body table { width: 100%; border-collapse: collapse; margin-bottom: 16px; overflow-x: auto; table-layout: fixed; }
   .markdown-body th, .markdown-body td { border: 1px solid var(--border); padding: 10px 14px; text-align: left; white-space: normal; word-break: break-word; }
-  .markdown-body th { background: rgba(255,255,255,0.05); color: white; font-weight: 600; }
+  .markdown-body th { background: rgba(255,255,255,0.05); color: white; font-weight: 600; position: sticky; top: 0; z-index: 1; }
   .markdown-body tr:nth-child(even) { background: rgba(255,255,255,0.02); }
+  .markdown-body tr:hover { background: rgba(255,255,255,0.02); }
   .markdown-body hr { border: none; border-top: 1px solid var(--border); margin: 24px 0; }
   .markdown-body a { color: var(--accent); text-decoration: none; }
   .markdown-body a:hover { text-decoration: underline; }
-  .markdown-body blockquote { border-left: 4px solid var(--accent); padding-left: 16px; color: var(--muted); margin-bottom: 16px; }
+  .markdown-body blockquote { border-left: 3px solid var(--accent); padding: 8px 16px; color: var(--muted); margin: 0 0 16px; background: rgba(255,255,255,0.02); border-radius: 0 6px 6px 0; font-size: 13px; }
+
+  /* ── IOC TABLE SCROLL CONTAINER ── */
+  .ioc-scroll {
+    max-height: 340px; overflow-y: auto; overflow-x: hidden;
+    border: 1px solid var(--border); border-radius: 10px;
+    margin-bottom: 4px; background: rgba(0,0,0,0.15);
+  }
+  .ioc-scroll table { margin-bottom: 0; width: 100%; table-layout: fixed; }
+  .ioc-scroll thead th:not(:empty) ~ * { } /* keep non-empty headers */
+  .ioc-scroll thead { visibility: collapse; }
+  .ioc-scroll td { overflow: hidden; text-overflow: ellipsis; }
+  .ioc-scroll::-webkit-scrollbar { width: 5px; }
+  .ioc-scroll::-webkit-scrollbar-track { background: transparent; }
+  .ioc-scroll::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 5px; }
+  .ioc-scroll::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.2); }
+
+  /* ── CLICK-TO-COPY on code cells ── */
+  td code {
+    cursor: pointer; transition: all 0.15s ease; position: relative;
+  }
+  td code:hover { background: rgba(255,255,255,0.10); color: var(--accent); }
+  td code:active { transform: scale(0.96); }
+  td code.copied { background: rgba(16,185,129,0.2); color: var(--success); }
+  .copy-toast {
+    position: fixed; bottom: 28px; left: 50%; transform: translateX(-50%) translateY(20px);
+    background: rgba(16,185,129,0.92); color: #fff; padding: 8px 20px;
+    border-radius: 8px; font-size: 13px; font-weight: 500;
+    font-family: 'Inter', sans-serif; pointer-events: none;
+    opacity: 0; transition: opacity 0.25s, transform 0.25s; z-index: 999;
+  }
+  .copy-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+  /* ── SHOW MORE / LESS ── */
+  .show-toggle {
+    display: block; width: 100%; padding: 7px 0;
+    margin: 0 0 16px; border: 1px solid var(--border);
+    background: rgba(255,255,255,0.02);
+    color: var(--muted); border-radius: 6px;
+    cursor: pointer; font-size: 12px; font-weight: 500;
+    font-family: 'Inter', sans-serif; letter-spacing: 0.02em;
+    transition: all 0.2s ease;
+  }
+  .show-toggle:hover { color: var(--text); border-color: #3a3a3a; background: rgba(255,255,255,0.04); }
+
+  /* ── 3-COLUMN DASHBOARD GRID ── */
+  .dashboard-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 24px;
+    margin-bottom: 24px;
+  }
+  .dashboard-grid > .card { display: flex; flex-direction: column; height: 100%; margin-bottom: 0; }
+
+  /* ── TOGGLE SWITCH ── */
+  .toggle-switch { position: relative; display: inline-block; width: 44px; height: 24px; }
+  .toggle-switch input { opacity: 0; width: 0; height: 0; }
+  .slider-toggle {
+    position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0;
+    background-color: var(--surface2); transition: .4s; border-radius: 24px;
+    border: 1px solid var(--border);
+  }
+  .slider-toggle:before {
+    position: absolute; content: ""; height: 16px; width: 16px; left: 3px; bottom: 3px;
+    background-color: var(--muted); transition: .4s; border-radius: 50%;
+  }
+  input:checked + .slider-toggle { background-color: var(--accent); border-color: var(--accent); }
+  input:checked + .slider-toggle:before { transform: translateX(20px); background-color: #000; }
+
+  /* ── ALERTS LIST ── */
+  .alerts-list { display: flex; flex-direction: column; gap: 10px; overflow-y: auto; flex: 1; margin-top: 10px; max-height: 420px; }
+  .alert-item { background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; padding: 14px; }
+  .alert-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 4px; }
+  .alert-time { font-size: 11px; color: var(--muted); margin-bottom: 4px; }
+  .alert-title { font-size: 13px; font-weight: 600; color: var(--text); }
+  .evidence-box {
+    background: rgba(0,0,0,0.3); border-left: 2px solid var(--danger); padding: 8px 12px;
+    border-radius: 4px; font-family: var(--mono); font-size: 11px; color: #f87171;
+    margin-top: 8px; max-height: 80px; overflow-y: auto; white-space: pre-wrap; line-height: 1.5;
+  }
+  .evidence-box.warning { border-left-color: var(--warning); color: #fbbf24; }
+  .cat-tag {
+    display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 10px;
+    font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; margin-right: 6px;
+    background: rgba(34,211,238,0.12); color: var(--accent); border: 1px solid rgba(34,211,238,0.25);
+  }
+  .cat-tag.data_breach { background: rgba(239,68,68,0.12); color: #f87171; border-color: rgba(239,68,68,0.3); }
+  .cat-tag.credentials { background: rgba(245,158,11,0.12); color: #fbbf24; border-color: rgba(245,158,11,0.3); }
+  .cat-tag.malware { background: rgba(168,85,247,0.12); color: #c084fc; border-color: rgba(168,85,247,0.3); }
+  .cat-tag.market_listing { background: rgba(16,185,129,0.12); color: #34d399; border-color: rgba(16,185,129,0.3); }
+  .cat-tag.paste { background: rgba(100,116,139,0.15); color: #94a3b8; border-color: rgba(100,116,139,0.3); }
+  .btn-secondary {
+    background: var(--surface2); color: var(--text); border: 1px solid var(--border);
+    width: 100%; margin-top: 10px;
+  }
+  .btn-secondary:hover { background: rgba(255,255,255,0.05); }
+
+  /* ── AUTO STATUS PILL IN HEADER ── */
+  .auto-status-pill {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 16px; border-radius: 20px; font-size: 12px; font-weight: 500;
+  }
+  .auto-status-pill.active { background: rgba(16,185,129,0.15); border: 1px solid rgba(16,185,129,0.3); color: var(--success); }
+  .auto-status-pill.inactive { background: rgba(100,116,139,0.15); border: 1px solid var(--border); color: var(--muted); }
+  .status-dot-sm { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+  .status-dot-sm.pulse { box-shadow: 0 0 6px currentColor; animation: pulse 1.2s ease-in-out infinite; }
 </style>
 </head>
 <body>
 <div class="header">
-  <span class="header-icon">🔍</span>
+  <div class="header-logo"></div>
   <div>
     <h1>Dark Web Leak Monitor</h1>
-    <p>AI-Powered Threat Intelligence Pipeline</p>
+    <p>Threat Intelligence Pipeline</p>
+  </div>
+  <div class="auto-status-pill inactive" id="auto-pill">
+    <div class="status-dot-sm"></div>
+    <span id="auto-pill-text">Automation Off</span>
   </div>
 </div>
 <div class="container">
 
-  <!-- RUN QUERY -->
+  <!-- 3-COLUMN DASHBOARD GRID -->
+  <div class="dashboard-grid">
+
+  <!-- COLUMN 1: RUN QUERY -->
   <div class="card">
     <div class="card-header">
-      <div class="card-icon blue">🚀</div>
+      <div class="h-bar"></div>
       <h2>Run Query</h2>
     </div>
-    <form id="query-form">
+    <form id="query-form" style="display:flex;flex-direction:column;flex:1">
       <label>Search Query</label>
       <input type="text" id="query" placeholder="e.g. company data breach, leaked credentials…" required>
       <div class="row">
-        <div><label>Engines</label><input type="number" id="engines" value="16" min="1" max="16"></div>
+        <div><label>Engines</label><input type="number" id="engines" value="__MAX_ENGINES__" min="1" max="__MAX_ENGINES__"></div>
         <div><label>Scrape Limit</label><input type="number" id="limit" value="10" min="1" max="50"></div>
         <div><label>Threads</label><input type="number" id="threads" value="3" min="1" max="10"></div>
       </div>
@@ -414,14 +747,66 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         </div>
         <div></div>
       </div>
-      <button type="submit" id="run-btn" class="btn btn-primary">▶ Run Pipeline</button>
+      <div style="flex:1"></div>
+      <button type="submit" id="run-btn" class="btn btn-primary">Run Pipeline</button>
     </form>
   </div>
+
+  <!-- COLUMN 2: AUTOMATION SETTINGS -->
+  <div class="card">
+    <div class="card-header">
+      <div class="h-bar" style="background:var(--accent2)"></div>
+      <h2>Automation Settings</h2>
+    </div>
+    <div style="flex:1;display:flex;flex-direction:column">
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:16px;background:rgba(255,255,255,0.03);border:1px solid var(--border);border-radius:10px;margin-bottom:20px">
+        <div>
+          <div style="color:var(--text);font-weight:600;font-size:14px">Enable Automation</div>
+          <div style="font-size:12px;color:var(--muted);margin-top:4px">Run current query on schedule</div>
+        </div>
+        <label class="toggle-switch">
+          <input type="checkbox" id="auto-enabled">
+          <span class="slider-toggle"></span>
+        </label>
+      </div>
+      <label>Monitor Interval</label>
+      <select id="auto-interval" style="margin-bottom:16px">
+        <option value="1">Every 1 Hour</option>
+        <option value="6" selected>Every 6 Hours</option>
+        <option value="12">Every 12 Hours</option>
+        <option value="24">Every 24 Hours</option>
+      </select>
+      <label>Webhook URL (Discord/Slack)</label>
+      <input type="text" id="auto-webhook" placeholder="https://..." style="margin-bottom:16px">
+      <div style="flex:1"></div>
+      <div style="padding:12px;border-radius:8px;border:1px dashed var(--border);text-align:center;margin-bottom:20px">
+        <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:4px">Next Automated Run</div>
+        <div style="font-weight:600;color:var(--accent);font-size:14px" id="auto-countdown">—</div>
+      </div>
+      <button type="button" class="btn btn-secondary" onclick="saveAutoSettings()">Save Settings</button>
+    </div>
+  </div>
+
+  <!-- COLUMN 3: RECENT ALERTS -->
+  <div class="card">
+    <div class="card-header" style="margin-bottom:8px">
+      <div class="h-bar" style="background:var(--danger)"></div>
+      <h2 style="display:flex;align-items:center;justify-content:space-between;width:100%">
+        Recent Alerts
+        <span class="badge badge-error" id="alert-count-badge" style="font-size:11px;padding:2px 8px;display:none">0 New</span>
+      </h2>
+    </div>
+    <div class="alerts-list" id="alerts-list">
+      <div class="empty-state">No alerts yet. Enable automation to start monitoring.</div>
+    </div>
+  </div>
+
+  </div> <!-- END dashboard-grid -->
 
   <!-- JOB STATUS -->
   <div class="card" id="job-status">
     <div class="card-header">
-      <div class="card-icon blue">⚡</div>
+      <div class="h-bar"></div>
       <h2>Job Status</h2>
     </div>
     <div id="job-info"></div>
@@ -430,7 +815,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   <!-- REPORTS -->
   <div class="card">
     <div class="card-header">
-      <div class="card-icon purple">📂</div>
+      <div class="h-bar"></div>
       <h2>Output Reports</h2>
     </div>
     <div id="file-list"><div class="empty-state">No reports yet. Run a pipeline to generate reports.</div></div>
@@ -443,7 +828,6 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   <div class="modal">
     <div class="modal-header">
       <div class="modal-title">
-        <span id="modal-icon" style="font-size:20px"></span>
         <h3 id="modal-title">Report</h3>
       </div>
       <button class="modal-close" onclick="closeModal()">✕</button>
@@ -463,10 +847,10 @@ const runBtn = document.getElementById('run-btn');
 let pollInterval = null;
 let currentJobId = null;
 
-const STEPS = ['searching','filtering','scraping','classifying','summarizing'];
+const STEPS = ['searching','filtering','scraping','categorizing','classifying','summarizing'];
 
 function setButtonRun() {
-  runBtn.textContent = '▶ Run Pipeline';
+  runBtn.textContent = 'Run Pipeline';
   runBtn.className = 'btn btn-primary';
   runBtn.disabled = false;
   runBtn.onclick = null;
@@ -474,7 +858,7 @@ function setButtonRun() {
 }
 
 function setButtonAbort() {
-  runBtn.textContent = '✕ Abort';
+  runBtn.textContent = 'Abort';
   runBtn.className = 'btn btn-abort';
   runBtn.disabled = false;
   runBtn.type = 'button';
@@ -484,7 +868,7 @@ function setButtonAbort() {
 async function abortJob() {
   if (!currentJobId) return;
   runBtn.disabled = true;
-  runBtn.textContent = '⏳ Aborting…';
+  runBtn.textContent = 'Aborting…';
   await fetch('/abort/' + currentJobId, { method: 'POST' });
 }
 
@@ -521,12 +905,14 @@ async function pollJob(jobId) {
     currentJobId = null;
     setButtonRun();
     loadFiles();
+    loadAlerts();
   } else if (s.status === 'aborted') {
     renderJobAborted();
     clearInterval(pollInterval);
     currentJobId = null;
     setButtonRun();
     loadFiles();
+    loadAlerts();
   } else if (s.status === 'error') {
     renderJobError(s.error);
     clearInterval(pollInterval);
@@ -538,7 +924,7 @@ async function pollJob(jobId) {
 function renderJobRunning(status, progress) {
   const stepHtml = STEPS.map(s =>
     `<span class="progress-step ${progress === s ? 'active' : ''}">
-      ${progress === s ? '⟳' : (STEPS.indexOf(s) < STEPS.indexOf(progress) ? '✓' : '○')} ${s}
+      ${progress === s ? '›' : (STEPS.indexOf(s) < STEPS.indexOf(progress) ? '·' : '·')} ${s}
     </span>`
   ).join('<span style="color:var(--border);margin:0 4px">›</span>');
   jobInfo.innerHTML = `
@@ -594,41 +980,40 @@ function fileCardHtml(f) {
     <div class="file-card">
       <div class="file-card-top">
         <div style="display:flex;align-items:center;gap:12px;">
-          <div class="file-card-icon ${meta.cls}">${meta.icon}</div>
+          <div class="file-card-indicator ${meta.cls}"></div>
           <div>
-            <div class="file-card-name">${escHtml(f.name)}</div>
+            <div class="file-card-name">${meta.displayName}</div>
             <div class="file-card-size">${f.size} · ${meta.label}</div>
           </div>
         </div>
       </div>
       <div class="file-card-actions">
-        <button class="btn btn-sm" onclick="openFile('${escHtml(f.name)}', '${meta.cls}', '${meta.icon}')">
-          👁 View
-        </button>
-        <a class="btn btn-sm" href="/results/${escHtml(f.name)}" download style="text-decoration:none">⬇ Download</a>
+        <button class="btn btn-sm" onclick="openFile('${escHtml(f.name)}', '${meta.cls}', '${meta.displayName}')">View</button>
+        <a class="btn btn-sm" href="/results/${escHtml(f.name)}" download style="text-decoration:none">Download</a>
       </div>
     </div>`;
 }
 
 function fileMeta(name) {
-  if (name.includes('summary'))  return { icon:'📋', cls:'summary',  label:'AI Summary'       };
-  if (name.includes('ioc'))      return { icon:'🔴', cls:'iocs',     label:'IOC Indicators'   };
-  if (name.includes('contact'))  return { icon:'📬', cls:'contacts', label:'Actor Contacts'   };
-  if (name.includes('scrape'))   return { icon:'🕸', cls:'default',  label:'Scraped Data'     };
-  if (name.includes('search'))   return { icon:'🔎', cls:'default',  label:'Search Results'   };
-  return                                { icon:'📄', cls:'default',  label:'Report'           };
+  if (name.includes('summary'))  return { displayName:'Summary',        cls:'summary',  label:'AI Summary'       };
+  if (name.includes('ioc'))      return { displayName:'IOC Indicators',  cls:'iocs',     label:'IOC Indicators'   };
+  if (name.includes('contact'))  return { displayName:'Actor Contacts',  cls:'contacts', label:'Actor Contacts'   };
+  if (name.includes('scrape'))   return { displayName:'Scraped Data',    cls:'default',  label:'Scraped Data'     };
+  if (name.includes('result'))   return { displayName:'Search Results',  cls:'results',  label:'Search Results'   };
+  return                                { displayName: name,             cls:'default',  label:'Report'           };
 }
 
 // ── Modal viewer ──────────────────────────────────────────
-async function openFile(name, cls, icon) {
-  document.getElementById('modal-icon').textContent  = icon;
-  document.getElementById('modal-title').textContent = name;
+async function openFile(name, cls, displayName) {
+  document.getElementById('modal-title').textContent = displayName;
   document.getElementById('modal-body').innerHTML    =
     '<div class="empty-state"><div class="spinner"></div>Loading…</div>';
   document.getElementById('modal-overlay').classList.add('open');
 
   const text = await fetch('/results/' + name).then(r => r.text());
   document.getElementById('modal-body').innerHTML = renderContent(name, cls, text);
+  // post-process IOC tables after DOM is updated
+  requestAnimationFrame(() => enhanceIOCView(document.getElementById('modal-body')));
 }
 
 function closeModal() {
@@ -642,15 +1027,72 @@ document.getElementById('modal-overlay').addEventListener('click', function(e) {
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
 
 function renderContent(name, cls, text) {
-  // All output files are now markdown — render through marked
   if (typeof marked !== 'undefined') {
-    return `<div class="markdown-body" style="background: var(--surface2); border: 1px solid var(--border); border-radius: 10px; padding: 24px; max-height: 60vh; overflow-y: auto;">${marked.parse(text)}</div>`;
+    return `<div class="markdown-body" style="background: var(--surface2); border: 1px solid var(--border); border-radius: 10px; padding: 24px; max-height: 80vh; overflow-y: auto;">${marked.parse(text)}</div>`;
   }
-  return `<div class="plain-text" style="white-space: pre-wrap; max-height: 60vh; overflow-y: auto;">${escHtml(text)}</div>`;
+  return `<div class="plain-text" style="white-space: pre-wrap; max-height: 80vh; overflow-y: auto;">${escHtml(text)}</div>`;
 }
 
 function escHtml(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ── IOC post-processing ─────────────────────────────────────
+function enhanceIOCView(root) {
+  if (!root) return;
+
+  // ensure toast element exists
+  if (!document.getElementById('copy-toast')) {
+    const t = document.createElement('div');
+    t.id = 'copy-toast'; t.className = 'copy-toast'; t.textContent = '✓ Copied to clipboard';
+    document.body.appendChild(t);
+  }
+
+  // 1) Click-to-copy on every <code> inside td
+  root.querySelectorAll('td code').forEach(code => {
+    if (code._copyBound) return;
+    code._copyBound = true;
+    code.title = 'Click to copy';
+    code.addEventListener('click', () => {
+      navigator.clipboard.writeText(code.textContent).then(() => {
+        code.classList.add('copied');
+        setTimeout(() => code.classList.remove('copied'), 900);
+        const toast = document.getElementById('copy-toast');
+        toast.classList.add('show');
+        setTimeout(() => toast.classList.remove('show'), 1200);
+      });
+    });
+  });
+
+  // 2) Scrollable + collapsible tables
+  root.querySelectorAll('.markdown-body table').forEach(tbl => {
+    if (tbl.closest('.ioc-scroll')) return; // already wrapped
+    const body = tbl.querySelector('tbody') || tbl;
+    const rows = Array.from(body.querySelectorAll('tr')).filter(r => !r.querySelector('th'));
+    if (rows.length <= 5) return; // small table, leave as-is
+
+    // wrap in scrollable container
+    const wrap = document.createElement('div');
+    wrap.className = 'ioc-scroll';
+    tbl.parentNode.insertBefore(wrap, tbl);
+    wrap.appendChild(tbl);
+
+    if (rows.length > 10) {
+      // collapse rows > 10
+      rows.forEach((r, i) => { if (i >= 10) r.style.display = 'none'; });
+      const btn = document.createElement('button');
+      btn.className = 'show-toggle';
+      btn.textContent = '▾  Show ' + (rows.length - 10) + ' more items';
+      let open = false;
+      btn.onclick = () => {
+        open = !open;
+        rows.forEach((r, i) => { if (i >= 10) r.style.display = open ? '' : 'none'; });
+        btn.textContent = open ? '▴  Show less' : '▾  Show ' + (rows.length - 10) + ' more items';
+        wrap.style.maxHeight = open ? 'none' : '340px';
+      };
+      wrap.after(btn);
+    }
+  });
 }
 
 // ── Ollama model selector ─────────────────────────────────
@@ -681,8 +1123,139 @@ async function loadOllamaModels() {
   }
 }
 
-// Load files on page open
+// ── Load persisted summary on page open ─────────────────
+async function loadLastSummary() {
+  try {
+    const res = await fetch('/last-summary');
+    if (!res.ok) return;
+    const data = await res.json();
+    if (data.summary) {
+      statusDiv.style.display = 'block';
+      renderJobDone({
+        results_count: data.urls_found || 0,
+        scraped_count: data.pages_scraped || 0,
+        summary_preview: data.summary
+      });
+    }
+  } catch(e) { /* no persisted summary */ }
+}
+
+// ── Automation settings ───────────────────────────────────
+let autoCountdownInterval = null;
+let autoNextRunTime = null;
+
+async function loadAutoSettings() {
+  try {
+    const res = await fetch('/automation/settings');
+    const data = await res.json();
+    document.getElementById('auto-enabled').checked = data.enabled || false;
+    document.getElementById('auto-interval').value = String(data.interval_hours || 6);
+    document.getElementById('auto-webhook').value = data.webhook_url || '';
+    updateAutoPill(data.enabled);
+    if (data.enabled && data.next_run_ts) {
+      autoNextRunTime = data.next_run_ts * 1000;
+      startCountdown();
+    }
+  } catch(e) {}
+}
+
+async function saveAutoSettings() {
+  const body = {
+    enabled: document.getElementById('auto-enabled').checked,
+    interval_hours: parseInt(document.getElementById('auto-interval').value),
+    webhook_url: document.getElementById('auto-webhook').value,
+  };
+  const res = await fetch('/automation/settings', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+  const data = await res.json();
+  updateAutoPill(body.enabled);
+  if (body.enabled && data.next_run_ts) {
+    autoNextRunTime = data.next_run_ts * 1000;
+    startCountdown();
+  } else {
+    document.getElementById('auto-countdown').textContent = '—';
+    if (autoCountdownInterval) clearInterval(autoCountdownInterval);
+  }
+}
+
+function updateAutoPill(enabled) {
+  const pill = document.getElementById('auto-pill');
+  const text = document.getElementById('auto-pill-text');
+  const dot = pill.querySelector('.status-dot-sm');
+  if (enabled) {
+    pill.className = 'auto-status-pill active';
+    dot.classList.add('pulse');
+    text.textContent = 'Automation Active';
+  } else {
+    pill.className = 'auto-status-pill inactive';
+    dot.classList.remove('pulse');
+    text.textContent = 'Automation Off';
+  }
+}
+
+function startCountdown() {
+  if (autoCountdownInterval) clearInterval(autoCountdownInterval);
+  function tick() {
+    const el = document.getElementById('auto-countdown');
+    if (!autoNextRunTime) { el.textContent = '—'; return; }
+    const diff = autoNextRunTime - Date.now();
+    if (diff <= 0) { el.textContent = 'Running now…'; return; }
+    const h = Math.floor(diff / 3600000);
+    const m = Math.floor((diff % 3600000) / 60000);
+    const s = Math.floor((diff % 60000) / 1000);
+    el.textContent = `In ${h}h ${m}m ${s}s`;
+  }
+  tick();
+  autoCountdownInterval = setInterval(tick, 1000);
+}
+
+// ── Alerts ────────────────────────────────────────────────
+async function loadAlerts() {
+  try {
+    const res = await fetch('/automation/alerts');
+    const alerts = await res.json();
+    const el = document.getElementById('alerts-list');
+    const badge = document.getElementById('alert-count-badge');
+    if (!alerts.length) {
+      el.innerHTML = '<div class="empty-state">No alerts yet. Enable automation to start monitoring.</div>';
+      badge.style.display = 'none';
+      return;
+    }
+    badge.textContent = alerts.length + ' Total';
+    badge.style.display = '';
+    el.innerHTML = alerts.slice(0, 15).map(a => renderAlert(a)).join('');
+  } catch(e) {}
+}
+
+function renderAlert(a) {
+  const sevMap = {
+    critical: { cls: 'badge-error', border: 'var(--danger)', label: 'Critical' },
+    medium:   { cls: 'badge-running', border: 'var(--warning)', label: 'Medium' },
+    clear:    { cls: 'badge-done', border: 'var(--success)', label: 'Clear' },
+    info:     { cls: 'badge-queued', border: 'var(--muted)', label: 'Info' },
+  };
+  const sev = sevMap[a.severity] || sevMap.info;
+  const catTag = a.category
+    ? `<span class="cat-tag ${escHtml(a.category)}">${escHtml(a.category.replace(/_/g, ' '))}</span>`
+    : '';
+  const evidenceHtml = a.evidence
+    ? `<div class="evidence-box${a.severity === 'medium' ? ' warning' : ''}">${escHtml(a.evidence)}</div>`
+    : (a.severity === 'clear' ? `<div style="font-size:12px;color:var(--muted);margin-top:8px">${escHtml(a.title)}</div>` : '');
+  return `
+    <div class="alert-item" style="border-left:2px solid ${sev.border}">
+      <div class="alert-time">${escHtml(a.timestamp)}</div>
+      <div class="alert-header">
+        <div class="alert-title">${catTag}${escHtml(a.title)}</div>
+        <span class="badge ${sev.cls}"><span class="dot"></span>${sev.label}</span>
+      </div>
+      ${evidenceHtml}
+    </div>`;
+}
+
+// Load files, last summary, automation settings, and alerts on page open
 loadFiles();
+loadLastSummary();
+loadAutoSettings();
+loadAlerts();
 </script>
 </body>
 </html>"""
@@ -694,7 +1267,7 @@ loadFiles();
 
 @app.route("/")
 def index():
-    return DASHBOARD_HTML
+    return DASHBOARD_HTML.replace("__MAX_ENGINES__", str(MAX_ENGINES))
 
 
 @app.route("/run", methods=["POST"])
@@ -709,7 +1282,7 @@ def run_pipeline():
         "use_ai":        data.get("use_ai", True),
         "ai_provider":   data.get("ai_provider", "gemini"),
         "ollama_model":  data.get("ollama_model", ""),
-        "num_engines":   data.get("num_engines", 16),
+        "num_engines":   data.get("num_engines", MAX_ENGINES),
         "scrape_limit":  data.get("scrape_limit", 10),
         "threads":       data.get("threads", 3),
         "depth":         data.get("depth", 1),
@@ -780,6 +1353,41 @@ def abort_job(job_id):
     return jsonify({"status": "abort_requested"})
 
 
+@app.route("/last-summary")
+def last_summary():
+    """return persisted summary + stats from output files if they exist"""
+    summary_path = os.path.join("output", "summary.txt")
+    if not os.path.isfile(summary_path):
+        return jsonify({}), 204
+
+    with open(summary_path, "r", encoding="utf-8") as f:
+        summary_text = f.read()
+
+    # try to count URLs from results.txt
+    urls_found = 0
+    results_path = os.path.join("output", "results.txt")
+    if os.path.isfile(results_path):
+        with open(results_path, "r", encoding="utf-8") as f:
+            for line in f:
+                if line.strip().startswith("|") and not line.strip().startswith("| #") and not line.strip().startswith("|--"):
+                    urls_found += 1
+
+    # try to count scraped pages from scraped_data.txt
+    pages_scraped = 0
+    scraped_path = os.path.join("output", "scraped_data.txt")
+    if os.path.isfile(scraped_path):
+        with open(scraped_path, "r", encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("URL:"):
+                    pages_scraped += 1
+
+    return jsonify({
+        "summary": summary_text,
+        "urls_found": urls_found,
+        "pages_scraped": pages_scraped
+    })
+
+
 @app.route("/ollama/models")
 def ollama_models():
     """return available ollama models for the dropdown"""
@@ -788,5 +1396,45 @@ def ollama_models():
     return jsonify({"models": models})
 
 
+@app.route("/automation/settings", methods=["GET"])
+def get_auto_settings():
+    """return current automation settings"""
+    settings = _load_auto_settings()
+    # compute next run timestamp if automation is active
+    if settings.get("enabled") and _auto_timer is not None:
+        # approximate: current time + remaining interval
+        interval_secs = settings.get("interval_hours", 6) * 3600
+        settings["next_run_ts"] = time.time() + interval_secs
+    return jsonify(settings)
+
+
+@app.route("/automation/settings", methods=["POST"])
+def set_auto_settings():
+    """save automation settings and reschedule"""
+    data = request.get_json()
+    settings = {
+        "enabled": data.get("enabled", False),
+        "interval_hours": data.get("interval_hours", 6),
+        "webhook_url": data.get("webhook_url", ""),
+    }
+    _save_auto_settings(settings)
+
+    # reschedule
+    _schedule_next_run()
+
+    resp = {"status": "saved"}
+    if settings["enabled"]:
+        resp["next_run_ts"] = time.time() + settings["interval_hours"] * 3600
+    return jsonify(resp)
+
+
+@app.route("/automation/alerts")
+def get_auto_alerts():
+    """return alert history"""
+    return jsonify(_load_alerts())
+
+
 if __name__ == "__main__":
+    # start automation scheduler if previously enabled
+    _schedule_next_run()
     app.run(host="0.0.0.0", port=5000, debug=True)

@@ -81,7 +81,7 @@ STAGE_MAX_TOKENS = {
 }
 
 # stages that output JSON
-STAGE_JSON_MODE = {"classify", "file_analysis"}
+STAGE_JSON_MODE = {"classify", "file_analysis", "company_check"}
 
 # per-key rate limit tracking
 _key_state = {}
@@ -551,7 +551,7 @@ INPUT: {query}"""
 # STAGE 2: RESULT FILTERING
 # ============================================================
 
-def filter_results(query: str, results: list, limit: int = 20) -> list:
+def filter_results(query: str, results: list, limit: int) -> list:
     """
     stage 2: use llm to pick the top `limit` most relevant search results.
     results format: list of dicts with {url, title}
@@ -575,16 +575,47 @@ def filter_results(query: str, results: list, limit: int = 20) -> list:
 
     results_block = "\n".join(results_text)
 
-    prompt = f"""You are a Cybercrime Threat Intelligence Expert. You are given a dark web search query and a list of search results. From the {len(results)} results, select the top {limit} results most likely to contain real leaked data, credentials, or breach intelligence.
-Query: {query}
-Results:
-{results_block}
-Rules:
-1. Prioritize results related to data breaches, credential dumps, paste sites, and forum breach posts.
-2. Deprioritize search pages, error pages, and generic marketplaces.
-3. Output ONLY the top {limit} most relevant result indices as a comma-separated list.
-4. Do not output anything else.
-Output:"""
+    prompt = f"""
+ROLE=You are a cyber threat intelligence ranking engine.
+TASK=From the search results below, select up to {limit} results most likely to contain real breach data or leaked credentials related to the query.
+QUERY={query}
+RESULTS={results_block}
+
+SCORING RULES
+Step 1 — COMPANY MATCH
+If the query contains a company name, assign highest priority to results
+whose title or URL contains that company name.
+
+Step 2 — BREACH KEYWORDS
+Prioritize results containing breach-related terms such as:
+leak, breach, database, dump, credentials, combolist,
+stealer logs, hacked, exposed, data leak.
+
+Step 3 — DARKWEB LEAK SOURCES
+Prefer results likely to be leak platforms such as:
+leak sites, ransomware blogs, paste sites, hacking forums.
+
+Step 4 — IGNORE IRRELEVANT RESULTS
+Never select results that appear to be:
+search engines, link directories, hosting services,
+login portals, generic marketplaces, porn sites,
+advertisement pages, or wiki link lists.
+
+Step 5 — RANKING
+Select up to {limit} results that most strongly indicate
+leaked data or breach information. If fewer than {limit}
+relevant results exist, return only those relevant results.
+
+OUTPUT RULES
+Return ONLY the result numbers (from the # column).
+Return them as a comma-separated list.
+
+Example:
+2,7,15,22,46
+
+Do NOT include explanations or text.
+OUTPUT:
+"""
 
     result = call_llm(prompt, "filter")
     if result:
@@ -617,7 +648,82 @@ Output:"""
 
 
 # ============================================================
-# STAGE 3: THREAT CLASSIFICATION (NEW - not in Robin)
+# STAGE 2.5: COMPANY CATEGORIZATION
+# ============================================================
+
+def categorize_company_relevance(query: str, scraped_data: dict) -> dict:
+    """
+    stage 2.5: check scraped data for company/target name mentions.
+    1. uses a single LLM call to extract the company/target name and variants from the query.
+    2. does simple case-insensitive string matching against scraped content.
+    categorizes each URL as 'company_specific' or 'general'.
+    returns dict: {url: 'company_specific' | 'general'}
+    """
+    if not scraped_data:
+        return {}
+
+    # --- step 1: extract company name(s) from the query via LLM ---
+    prompt = f"""Extract the company name, brand name, or specific target from this search query.
+Return ONLY the names as a comma-separated list. Include common variations, abbreviations, and domain names.
+
+Examples:
+- Query: "Microsoft data breach" → Microsoft, microsoft.com, MSFT
+- Query: "leaked credentials Tesla" → Tesla, tesla.com
+- Query: "infosys employee data leak" → Infosys, infosys.com
+- Query: "ransomware attack" → NONE
+- Query: "stolen credit cards" → NONE
+
+If the query is about a GENERAL topic (not targeting a specific company/person/org), return exactly "NONE".
+
+Query: "{query}"
+Names:"""
+
+    import re
+    result = call_llm(prompt, "company_check")
+    
+    company_names = []
+    if result:
+        cleaned = result.strip().strip('"').strip("'")
+        if cleaned.upper() != "NONE" and cleaned:
+            # split by comma, clean each name
+            for name in cleaned.split(","):
+                name = name.strip().strip('"').strip("'").strip()
+                if name and len(name) > 1:
+                    company_names.append(name)
+
+    # also add the raw query words as potential matches (if short enough to be a name)
+    query_words = query.strip().split()
+    if len(query_words) <= 3:
+        # short query is likely itself a company name
+        company_names.append(query.strip())
+
+    if not company_names:
+        # no company identified — everything is general
+        print(f"  [*] No specific company/target identified in query. All results marked as general.")
+        return {url: "general" for url, content in scraped_data.items()
+                if not content.startswith("[ERROR")}
+
+    # deduplicate and lowercase for matching
+    search_terms = list(set(name.lower() for name in company_names if len(name) > 1))
+    print(f"  [*] Company/target names to match: {', '.join(company_names)}")
+
+    # --- step 2: string match against scraped content ---
+    all_categories = {}
+    for url, content in scraped_data.items():
+        if content.startswith("[ERROR"):
+            continue
+
+        content_lower = content.lower()
+        # check if any company name variant appears in the content
+        found = any(term in content_lower for term in search_terms)
+        all_categories[url] = "company_specific" if found else "general"
+
+    return all_categories
+
+
+
+# ============================================================
+# STAGE 3: THREAT CLASSIFICATION
 # ============================================================
 
 def _parse_classification_json(result: str) -> list:
@@ -630,12 +736,10 @@ def _parse_classification_json(result: str) -> list:
     return json.loads(cleaned)
 
 
-def classify_threats(query: str, scraped_data: dict) -> dict:
+def classify_threats(query: str, scraped_data: dict, company_categories: dict = None) -> dict:
     """
-    stage 3: classify each scraped page into threat categories with severity.
-    processes in batches of 6 to prevent JSON truncation.
-    uses cleaned content for better signal.
-    returns dict of url -> {category, severity, reason, evidence}
+    stage 3: classify scraped pages into threat categories.
+    if company_categories is provided, each entry gets a 'company_relevance' field.
     """
     if not scraped_data:
         return {}
@@ -678,139 +782,126 @@ def classify_threats(query: str, scraped_data: dict) -> dict:
             for i, (url, content) in enumerate(batch)
         )
 
-        prompt = f"""Threat classification engine. Classify each page and extract the KEY PHRASE (max 50 chars) that is the actual threat indicator.
+        prompt = f"""
+ROLE=You are a cyber threat intelligence classification engine.
+TASK=For each page below:
+1. Classify the page into ONE category.
+2. Assign a severity level.
+3. Extract the most important threat phrase from the content.
 
-Context: {query}
+CONTEXT=Search query: {query}
+PAGES={content_block}
 
-Pages:
-{content_block}
+CATEGORY DEFINITIONS
 
-Categories: data_breach (leaked DBs, credential dumps, exposed records) | credentials (combo lists, email:pass) | malware (samples, ransomware, stealers, RATs, exploits) | market_listing (cards, accounts, services for sale) | forum_post (discussions, tutorials) | paste (raw data dumps) | other
-Severity: critical (active large-scale breach, fresh creds, zero-day) | high (confirmed leaked data, working exploits) | medium (older data, partial leaks) | low (generic, tangential)
+data_breach
+Leaked databases, exposed records, breach announcements.
 
-Output ONLY valid JSON array, no markdown, no explanation:
-[{{"url": "...", "category": "...", "severity": "...", "reason": "short reason max 30 chars", "evidence": "key threat phrase from page max 50 chars"}}]
+credentials
+Email:password combos, credential lists, stealer logs.
 
-JSON:"""
+malware
+Malware samples, ransomware, stealers, RATs, exploits.
+
+market_listing
+Listings selling cards, accounts, services, access.
+
+forum_post
+Discussion posts, tutorials, conversations.
+
+paste
+Raw text dumps or paste pages containing leaked data.
+
+other
+Content unrelated to cybercrime or leaks.
+
+SEVERITY RULES
+
+critical
+Fresh or large-scale breach data, active credential dumps,
+zero-day exploits, or large stealer logs.
+
+high
+Confirmed leaked data, working exploits, active malware.
+
+medium
+Older leaks, partial data, secondary discussions.
+
+low
+Generic discussion or weak relevance.
+
+EVIDENCE EXTRACTION
+
+Extract a SHORT phrase from the page that best proves the threat.
+Examples:
+"10M customer database leak"
+"email:pass combo list 2025"
+"ransomware builder v3"
+"telegram stealer logs"
+
+Rules:
+- max 50 characters
+- copy from page text if possible
+- do NOT invent phrases
+
+OUTPUT RULES
+
+Return ONLY a valid JSON array.
+Do NOT include markdown.
+Do NOT include explanations.
+Use the URL exactly as provided.
+
+FORMAT
+
+[
+{{"url":"...", "category":"...", "severity":"...", "reason":"short reason max 30 chars", "evidence":"key phrase max 50 chars"}}
+]
+
+JSON:
+"""
 
         parsed = _call_llm_json_retry(prompt, "classify")
         if parsed:
             try:
                 for item in parsed:
-                    all_classified[item["url"]] = {
+                    url = item["url"]
+                    entry = {
                         "category": item.get("category", "other"),
                         "severity": item.get("severity", "low"),
                         "reason": item.get("reason", "")[:60],
                         "evidence": item.get("evidence", "")[:80],
                     }
+                    if company_categories:
+                        entry["company_relevance"] = company_categories.get(url, "general")
+                    all_classified[url] = entry
             except (KeyError, TypeError) as e:
                 print(f"  [!] Failed to process batch {batch_num}: {str(e)[:60]}")
                 for url, _ in batch:
                     if url not in all_classified:
-                        all_classified[url] = {"category": "other", "severity": "medium", "reason": "parse failed", "evidence": ""}
+                        entry = {"category": "other", "severity": "medium", "reason": "parse failed", "evidence": ""}
+                        if company_categories:
+                            entry["company_relevance"] = company_categories.get(url, "general")
+                        all_classified[url] = entry
         else:
             # LLM unavailable — fallback for this batch
             for url, _ in batch:
-                all_classified[url] = {"category": "other", "severity": "medium", "reason": "LLM unavailable", "evidence": ""}
+                entry = {"category": "other", "severity": "medium", "reason": "LLM unavailable", "evidence": ""}
+                if company_categories:
+                    entry["company_relevance"] = company_categories.get(url, "general")
+                all_classified[url] = entry
 
     return all_classified
-
-# ============================================================
-# STAGE 3.5: COMPANY RELEVANCE VERIFICATION
-# ============================================================
-
-def verify_company_relevance(query: str, scraped_data: dict, classifications: dict) -> dict:
-    """
-    verify whether each classified threat is specific to the target company/topic,
-    or generic dark web data that cannot be attributed.
-    returns dict: {url: {relevance, confidence, reasoning}}
-    """
-    if not classifications or not scraped_data:
-        return {}
-
-    # build compact entries for the prompt
-    entries = []
-    url_list = []
-    for url, cls in classifications.items():
-        content = scraped_data.get(url, '')
-        if content.startswith("[ERROR"):
-            continue
-
-        # use first 500 chars of content for context
-        preview = content[:500].replace('\n', ' ').strip()
-        cat = cls.get('category', 'unknown')
-        sev = cls.get('severity', 'unknown')
-        entries.append(f"URL: {url}\nCategory: {cat} | Severity: {sev}\nContent: {preview}")
-        url_list.append(url)
-
-    if not entries:
-        return {}
-
-    content_block = "\n---\n".join(entries)
-
-    prompt = f"""Company/Target verification analyst. Determine whether each threat below is SPECIFIC to the search target or just generic dark web data.
-
-Search target: "{query}"
-
-For each URL, classify relevance as:
-- "confirmed": content explicitly mentions the target by name with specific data (e.g. company employee emails, named database, specific breach details)
-- "likely": content strongly implies connection to target (e.g. matching industry/region, related services mentioned)
-- "generic": content is general dark web data that CANNOT be confirmed as related to the target (e.g. generic credential lists, random databases, unrelated marketplace listings)
-- "unrelated": content has nothing to do with the target
-
-Respond with ONLY valid JSON — an object where each key is the URL and value has:
-- "relevance": one of confirmed/likely/generic/unrelated
-- "confidence": high/medium/low
-- "reasoning": 1 sentence explaining why
-
-=== DATA ===
-{content_block}
-=== END DATA ==="""
-
-    result = _call_llm_json_retry(prompt, "classify")
-
-    verdicts = {}
-    if result:
-        try:
-            parsed = json.loads(result) if isinstance(result, str) else result
-            if isinstance(parsed, dict):
-                for url in url_list:
-                    # try exact match first, then partial
-                    entry = parsed.get(url)
-                    if not entry:
-                        for k, v in parsed.items():
-                            if k in url or url in k:
-                                entry = v
-                                break
-                    if entry and isinstance(entry, dict):
-                        verdicts[url] = {
-                            'relevance': entry.get('relevance', 'generic'),
-                            'confidence': entry.get('confidence', 'low'),
-                            'reasoning': entry.get('reasoning', ''),
-                        }
-        except (json.JSONDecodeError, TypeError):
-            pass
-
-    # fallback for any URLs not covered
-    for url in url_list:
-        if url not in verdicts:
-            verdicts[url] = {
-                'relevance': 'generic',
-                'confidence': 'low',
-                'reasoning': 'verification unavailable',
-            }
-
-    return verdicts
 
 
 # ============================================================
 # STAGE 4: INTELLIGENCE SUMMARY
 # ============================================================
 
-def generate_summary(query: str, scraped_data: dict, classifications: dict, regex_iocs: dict = None, actor_contacts: dict = None) -> str:
+def generate_summary(query: str, scraped_data: dict, classifications: dict, regex_iocs: dict = None, actor_contacts: dict = None, company_categories: dict = None) -> str:
     """
     stage 4: generate structured threat intelligence report with evidence.
     includes threat actor contacts and pre-extracted IOCs.
+    if company_categories provided, findings are labeled as company-specific or general.
     """
     if not scraped_data:
         return "No data available for summary generation."
@@ -851,7 +942,13 @@ def generate_summary(query: str, scraped_data: dict, classifications: dict, rege
             continue
         seen_titles.add(content_sig)
 
-        entries.append(f"[{i}] URL: {url}\nClassification: {cat} | Severity: {sev}\nEvidence: {evidence}\nContent Preview: {display_content}")
+        # add company relevance tag
+        relevance_tag = ""
+        if company_categories:
+            rel = company_categories.get(url, cls.get("company_relevance", "general"))
+            relevance_tag = f" | Relevance: {'COMPANY-SPECIFIC' if rel == 'company_specific' else 'GENERAL'}"
+
+        entries.append(f"[{i}] URL: {url}\nClassification: {cat} | Severity: {sev}{relevance_tag}\nEvidence: {evidence}\nContent Preview: {display_content}")
 
     if not entries:
         return "No valid content to summarize."
@@ -869,6 +966,13 @@ def generate_summary(query: str, scraped_data: dict, classifications: dict, rege
 
     threat_matrix = "Threat Distribution: " + ", ".join(f"{k}: {v}" for k, v in cat_counts.items())
     severity_matrix = "Severity Distribution: " + ", ".join(f"{k}: {v}" for k, v in sev_counts.items())
+
+    # company categorization stats
+    company_stats_block = ""
+    if company_categories:
+        cs_count = sum(1 for v in company_categories.values() if v == "company_specific")
+        gen_count = sum(1 for v in company_categories.values() if v == "general")
+        company_stats_block = f"\nCompany Relevance: {cs_count} company-specific, {gen_count} general"
 
     # format threat actor contacts — enriched format with context
     contacts_block = ""
@@ -899,14 +1003,14 @@ def generate_summary(query: str, scraped_data: dict, classifications: dict, rege
                     ioc_lines.append(f"  {ioc_type}: [{len(values)} items from catalog — omitted]")
                     continue
                 for val in values[:5]:
-                    ioc_lines.append(f"  {ioc_type}: {val} [from: {url[:40]}]")
+                    ioc_lines.append(f"  {ioc_type}: {val} [from: {url}]")
         ioc_block = "\n".join(ioc_lines[:25])
 
     prompt = f"""You are a senior Cyber Threat Intelligence Analyst. Produce a comprehensive dark web OSINT report based on the intelligence data below. ANALYZE the data thoroughly — extract meaning, identify patterns, assess real threats, and provide actionable intelligence.
 
 Investigation Query: "{query}"
 {threat_matrix}
-{severity_matrix}
+{severity_matrix}{company_stats_block}
 Total Unique Sources: {len(entries)}
 
 {contacts_block}
@@ -937,13 +1041,6 @@ Do NOT just use "other" — analyze what each page actually contains and assign 
 "Key Indicator" = the single most important phrase proving this categorization (max 40 chars).
 Include ALL categories found — do not combine or omit.
 
-### Key Findings
-4-6 numbered findings ordered by severity. For each finding:
-1. **[Finding Title]** — Describe what was found with specifics: names, numbers, prices, data types, volumes.
-   - *Evidence*: Direct quote or data point extracted from the scraped content (max 80 chars)
-   - *Source*: Which URL or page type this was found on (1 line)
-   - *Impact*: Why this matters for the organization and what risk it poses (1-2 lines)
-
 ### Threat Actors
 | Handle/Contact | Platform | Offering/Activity | Context |
 |---|---|---|---|
@@ -952,27 +1049,72 @@ Use the "Threat Actor Contacts" data above. Identify WHO is selling/offering WHA
 Include ALL identified threat actors — do not truncate this table.
 If no contacts found, write "No threat actor contacts identified in scraped pages."
 
+<div style="display: flex; gap: 24px; align-items: flex-start; flex-wrap: wrap; width: 100%; box-sizing: border-box;">
+
+<!-- LEFT COLUMN: COMPANY SPECIFIC -->
+<div style="flex: 1 1 calc(50% - 12px); min-width: 300px; max-width: 100%; box-sizing: border-box; overflow-x: auto; background: rgba(0, 200, 255, 0.03); padding: 20px; padding-top: 4px; border-radius: 10px; border: 1px solid rgba(0, 200, 255, 0.1);">
+
+<h2 style="font-size: 17px; border-bottom: none; margin-bottom: 8px; padding-bottom: 0;">🏢 Company-Specific</h2>
+<hr style="margin-top: 0; margin-bottom: 20px; border-top: 1px solid rgba(0, 200, 255, 0.2); border-bottom: none;">
+
+### Key Findings
+List findings that are SPECIFICALLY about "{query}" (marked as COMPANY-SPECIFIC in the data above).
+For each finding:
+1. **[Finding Title]** — Describe what was found with specifics: names, numbers, prices, data types, volumes.
+   - *Evidence*: Direct quote or data point extracted from the scraped content (max 80 chars)
+   - *Source*: Which URL or page type this was found on (1 line)
+   - *Impact*: Why this matters for the organization and what risk it poses (1-2 lines)
+If no company-specific findings exist, write "No findings directly attributable to the target."
+
 ### Evidence Report
-| # | Type | URL (short) | Key Finding | Severity |
+| # | Type | URL | Key Finding | Severity |
 |---|---|---|---|---|
-List the 6-10 most important pages. Skip dead links, error pages, and duplicates.
+List pages marked COMPANY-SPECIFIC. Skip dead links, error pages, and duplicates.
 "Type" = what this page IS (e.g., "Hacking Forum", "Data Shop", "Leak Blog", "Tutorial Thread", "Breach DB")
 "Key Finding" = the SPECIFIC threat indicator from this page (max 60 chars). NOT raw HTML.
 "Severity" = critical/high/medium/low
+If none, write "No company-specific evidence found."
 
-### IOCs (Indicators of Compromise)
+### Indicators of Compromise
 | Type | Value | Source | Context |
 |---|---|---|---|
-Use the pre-extracted IOCs. Prioritize: emails, crypto wallets, credential dumps, onion URLs.
+List IOCs extracted from COMPANY-SPECIFIC pages only.
+Prioritize: emails, crypto wallets, credential dumps, onion URLs.
 SKIP domains from breach catalog listings (hundreds of .com domains = catalog noise, not IOCs).
-Max 15 rows. Include context for each IOC explaining its significance.
-"Source" = shortened source domain (max 25 chars).
+Max 10 rows. Include context for each IOC explaining its significance.
+"Source" = the full source URL.
+If none, write "No company-specific IOCs found."
 
-### Recommended Actions
-4-6 specific, actionable steps based on the findings above. Be concrete and reference specific findings:
-- Reference specific threat actors, handles, or IOCs (e.g., "Monitor Telegram handle @xyz for updates")
-- Suggest specific defensive measures based on the threat types found
-- Prioritize actions by urgency
+</div>
+
+<!-- RIGHT COLUMN: GENERAL DARK WEB -->
+<div style="flex: 1 1 calc(50% - 12px); min-width: 300px; max-width: 100%; box-sizing: border-box; overflow-x: auto; background: rgba(255, 255, 255, 0.02); padding: 20px; padding-top: 4px; border-radius: 10px; border: 1px solid rgba(255, 255, 255, 0.08);">
+
+<h2 style="font-size: 17px; border-bottom: none; margin-bottom: 8px; padding-bottom: 0;">🌐 General Dark Web</h2>
+<hr style="margin-top: 0; margin-bottom: 20px; border-top: 1px solid rgba(255, 255, 255, 0.1); border-bottom: none;">
+
+### Key Findings
+List findings from GENERAL (non-target-specific) dark web data.
+For each finding:
+1. **[Finding Title]** — Describe what was found with specifics.
+   - *Evidence*: Direct quote or data point (max 80 chars)
+   - *Source*: Which URL or page type (1 line)
+   - *Impact*: Broader threat landscape relevance (1-2 lines)
+
+### Evidence Report
+| # | Type | URL | Key Finding | Severity |
+|---|---|---|---|---|
+List pages marked GENERAL. Same column rules as above.
+
+### Indicators of Compromise
+| Type | Value | Source | Context |
+|---|---|---|---|
+List IOCs from GENERAL (non-target-specific) dark web pages.
+Same rules as above. Max 10 rows.
+
+</div>
+
+</div>
 
 CRITICAL RULES:
 - NO raw HTML/boilerplate in any output (no "JavaScript is Disabled", no "Menu Log in Register")
