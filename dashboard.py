@@ -341,6 +341,32 @@ def _run_pipeline(job_id: str, query: str, config: dict):
 
             if _check_abort(job_id): raise InterruptedError("Aborted")
 
+            # file analysis + AI verification
+            with _job_lock:
+                _jobs[job_id]["progress"] = "analyzing_files"
+
+            try:
+                from file_analyzer import analyze_threat_files, format_file_analysis
+                file_analysis = analyze_threat_files(html_cache, classifications, max_workers=threads)
+
+                file_verdicts = {}
+                if file_analysis:
+                    if _check_abort(job_id): raise InterruptedError("Aborted")
+                    from ai_engine import verify_threat_files
+                    file_verdicts = verify_threat_files(query, file_analysis)
+
+                    # save file analysis report
+                    report = format_file_analysis(file_analysis, file_verdicts)
+                    os.makedirs("output", exist_ok=True)
+                    with open("output/file_analysis.txt", "w", encoding="utf-8") as f:
+                        f.write(report)
+            except InterruptedError:
+                raise
+            except Exception as e:
+                print(f"[!] File analysis failed: {str(e)[:100]}")
+
+            if _check_abort(job_id): raise InterruptedError("Aborted")
+
             with _job_lock:
                 _jobs[job_id]["progress"] = "summarizing"
 
@@ -847,7 +873,7 @@ const runBtn = document.getElementById('run-btn');
 let pollInterval = null;
 let currentJobId = null;
 
-const STEPS = ['searching','filtering','scraping','categorizing','classifying','summarizing'];
+const STEPS = ['searching','filtering','scraping','categorizing','classifying','analyzing_files','summarizing'];
 
 function setButtonRun() {
   runBtn.textContent = 'Run Pipeline';
@@ -995,12 +1021,13 @@ function fileCardHtml(f) {
 }
 
 function fileMeta(name) {
-  if (name.includes('summary'))  return { displayName:'Summary',        cls:'summary',  label:'AI Summary'       };
-  if (name.includes('ioc'))      return { displayName:'IOC Indicators',  cls:'iocs',     label:'IOC Indicators'   };
-  if (name.includes('contact'))  return { displayName:'Actor Contacts',  cls:'contacts', label:'Actor Contacts'   };
-  if (name.includes('scrape'))   return { displayName:'Scraped Data',    cls:'default',  label:'Scraped Data'     };
-  if (name.includes('result'))   return { displayName:'Search Results',  cls:'results',  label:'Search Results'   };
-  return                                { displayName: name,             cls:'default',  label:'Report'           };
+  if (name.includes('summary'))       return { displayName:'Summary',        cls:'summary',  label:'AI Summary'       };
+  if (name.includes('file_analysis')) return { displayName:'File Analysis',   cls:'iocs',     label:'File Analysis'    };
+  if (name.includes('ioc'))           return { displayName:'IOC Indicators',  cls:'iocs',     label:'IOC Indicators'   };
+  if (name.includes('contact'))       return { displayName:'Actor Contacts',  cls:'contacts', label:'Actor Contacts'   };
+  if (name.includes('scrape'))        return { displayName:'Scraped Data',    cls:'default',  label:'Scraped Data'     };
+  if (name.includes('result'))        return { displayName:'Search Results',  cls:'results',  label:'Search Results'   };
+  return                                     { displayName: name,             cls:'default',  label:'Report'           };
 }
 
 // ── Modal viewer ──────────────────────────────────────────
