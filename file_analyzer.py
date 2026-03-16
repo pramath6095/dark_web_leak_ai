@@ -603,97 +603,140 @@ def analyze_threat_files(html_cache: dict, classifications: dict, max_workers: i
         loop.close()
 
 
+def _format_size(size_bytes: int) -> str:
+    """format byte count into human-readable string"""
+    if size_bytes > 1024 * 1024:
+        return f"{size_bytes / (1024*1024):.1f} MB"
+    elif size_bytes > 1024:
+        return f"{size_bytes / 1024:.1f} KB"
+    return f"{size_bytes} bytes"
+
+
 def format_file_analysis(results: dict, verdicts: dict = None) -> str:
-    """format file analysis results into readable text for output file"""
+    """format file analysis results as markdown for dashboard rendering"""
     if not results:
         return "No files analyzed."
-    
+
     lines = []
-    lines.append("=" * 60)
-    lines.append("FILE ANALYSIS REPORT")
-    lines.append("=" * 60)
-    
+    lines.append("## FILE ANALYSIS REPORT")
+    lines.append("")
+
+    # ── summary table ──
+    lines.append("### Overview")
+    lines.append("")
+    lines.append("| # | File / Source | Type | Size | Verdict |")
+    lines.append("|---|---|---|---|---|")
+
     for i, (url, analysis) in enumerate(results.items(), 1):
-        lines.append(f"\n{'─' * 60}")
-        lines.append(f"[{i}] {url[:80]}")
-        lines.append(f"{'─' * 60}")
-        
-        if isinstance(analysis, dict):
-            atype = analysis.get('type', analysis.get('file_type', 'unknown'))
-            lines.append(f"  Type: {atype}")
-            
-            if analysis.get('extension'):
-                lines.append(f"  Extension: {analysis['extension']}")
-            
-            if analysis.get('link_text'):
-                lines.append(f"  Link Text: {analysis['link_text']}")
-            
-            if analysis.get('threat_by_type'):
-                lines.append(f"  !! THREAT BY FILE TYPE -- inherently suspicious on dark web")
-            
-            # inline threat data (marketplace listings, paste dumps)
-            if 'inline_data' in analysis:
-                idata = analysis['inline_data']
-                lines.append(f"  ** INLINE THREAT DATA DETECTED ({idata['keyword_hits']} threat keyword hits)")
-                if idata.get('is_marketplace'):
-                    lines.append(f"  ** This is a MARKETPLACE listing")
-                if idata.get('data_sizes'):
-                    lines.append(f"  Data sizes mentioned: {', '.join(idata['data_sizes'][:8])}")
-                if idata.get('price_indicators'):
-                    lines.append(f"  Prices listed: {', '.join(idata['price_indicators'])}")
-                if idata.get('unique_keywords'):
-                    lines.append(f"  Threat keywords: {', '.join(idata['unique_keywords'][:10])}")
-            
-            if 'size_bytes' in analysis and analysis['size_bytes']:
-                size = analysis['size_bytes']
-                if size > 1024 * 1024:
-                    lines.append(f"  Size: {size / (1024*1024):.1f} MB")
-                elif size > 1024:
-                    lines.append(f"  Size: {size / 1024:.1f} KB")
-                else:
-                    lines.append(f"  Size: {size} bytes")
-            
-            if 'total_size' in analysis:
-                size = analysis['total_size']
-                if size > 1024 * 1024:
-                    lines.append(f"  Total Size: {size / (1024*1024):.1f} MB")
-                elif size > 1024:
-                    lines.append(f"  Total Size: {size / 1024:.1f} KB")
-            
-            if 'files' in analysis and analysis['files']:
-                lines.append(f"  Files in archive/torrent ({len(analysis['files'])}):")
-                for f in analysis['files'][:10]:
-                    fsize = f.get('size', 0)
-                    if fsize > 1024 * 1024:
-                        size_str = f"{fsize / (1024*1024):.1f} MB"
-                    elif fsize > 1024:
-                        size_str = f"{fsize / 1024:.1f} KB"
-                    else:
-                        size_str = f"{fsize} bytes"
-                    lines.append(f"    • {f['path']} ({size_str})")
-                if len(analysis['files']) > 10:
-                    lines.append(f"    ... and {len(analysis['files']) - 10} more")
-            
-            if 'header_preview' in analysis and analysis['header_preview']:
-                preview = analysis['header_preview'][:500]
-                lines.append(f"  Header Preview:")
-                for line in preview.split('\n')[:10]:
-                    lines.append(f"    | {line}")
-            
-            if 'name' in analysis:
-                lines.append(f"  Name: {analysis['name']}")
-            
-            if 'info_hash' in analysis and analysis['info_hash']:
-                lines.append(f"  Info Hash: {analysis['info_hash']}")
-            
-            if 'error' in analysis:
-                lines.append(f"  Error: {analysis['error']}")
-        
-        # add verdict if available
+        if not isinstance(analysis, dict):
+            continue
+        atype = analysis.get('type', analysis.get('file_type', 'unknown'))
+        ext = analysis.get('extension', '')
+        link_text = analysis.get('link_text', '')
+        label = link_text[:40] if link_text else (ext if ext else atype)
+
+        size_val = analysis.get('size_bytes') or analysis.get('total_size') or 0
+        size_str = _format_size(size_val) if size_val else '—'
+
+        verdict_str = '—'
         if verdicts and url in verdicts:
             v = verdicts[url]
-            lines.append(f"\n  AI VERDICT: {v.get('verdict', 'unknown').upper()}")
-            lines.append(f"  Confidence: {v.get('confidence', 'N/A')}")
-            lines.append(f"  Reason: {v.get('reason', 'N/A')}")
-    
+            vd = v.get('verdict', 'unknown').replace('_', ' ').title()
+            conf = v.get('confidence', '')
+            verdict_str = f"**{vd}** ({conf})" if conf else f"**{vd}**"
+
+        lines.append(f"| {i} | {label} | `{atype}` | {size_str} | {verdict_str} |")
+
+    lines.append("")
+
+    # ── detailed entries ──
+    lines.append("---")
+    lines.append("")
+
+    for i, (url, analysis) in enumerate(results.items(), 1):
+        if not isinstance(analysis, dict):
+            continue
+
+        atype = analysis.get('type', analysis.get('file_type', 'unknown'))
+        lines.append(f"### [{i}] {atype}")
+        lines.append("")
+        lines.append(f"**URL:** `{url[:120]}`")
+
+        if analysis.get('extension'):
+            lines.append(f"  \n**Extension:** `{analysis['extension']}`")
+
+        if analysis.get('link_text'):
+            lines.append(f"  \n**Link Text:** {analysis['link_text'][:100]}")
+
+        if analysis.get('threat_by_type'):
+            lines.append(f"  \n> ⚠️ **THREAT BY FILE TYPE** — inherently suspicious on dark web")
+
+        # inline threat data
+        if 'inline_data' in analysis:
+            idata = analysis['inline_data']
+            lines.append("")
+            lines.append(f"**Inline Threat Data** — {idata['keyword_hits']} threat keyword hits")
+            if idata.get('is_marketplace'):
+                lines.append(f"  \n> 🛒 **Marketplace Listing**")
+            if idata.get('data_sizes'):
+                lines.append(f"  \n**Data sizes:** {', '.join(idata['data_sizes'][:8])}")
+            if idata.get('price_indicators'):
+                lines.append(f"  \n**Prices:** {', '.join(idata['price_indicators'])}")
+            if idata.get('unique_keywords'):
+                kws = '`, `'.join(idata['unique_keywords'][:10])
+                lines.append(f"  \n**Keywords:** `{kws}`")
+
+        size_val = analysis.get('size_bytes') or analysis.get('total_size') or 0
+        if size_val:
+            lines.append(f"  \n**Size:** {_format_size(size_val)}")
+
+        # torrent / archive file listing
+        if 'files' in analysis and analysis['files']:
+            lines.append("")
+            lines.append(f"**Files in archive/torrent ({len(analysis['files'])}):**")
+            lines.append("")
+            lines.append("| File | Size |")
+            lines.append("|---|---|")
+            for f in analysis['files'][:10]:
+                fsize = f.get('size', 0)
+                lines.append(f"| `{f['path']}` | {_format_size(fsize)} |")
+            if len(analysis['files']) > 10:
+                lines.append(f"| *… and {len(analysis['files']) - 10} more* | |")
+
+        # header preview (in a code fence to avoid garbled binary)
+        if 'header_preview' in analysis and analysis['header_preview']:
+            preview = analysis['header_preview'][:500]
+            # sanitize: strip non-printable chars for cleaner display
+            clean = ''.join(c if c.isprintable() or c in '\n\r\t' else '·' for c in preview)
+            display_lines = clean.split('\n')[:10]
+            lines.append("")
+            lines.append("**Header Preview:**")
+            lines.append("```")
+            lines.extend(display_lines)
+            lines.append("```")
+
+        if 'name' in analysis:
+            lines.append(f"  \n**Name:** {analysis['name']}")
+
+        if analysis.get('info_hash'):
+            lines.append(f"  \n**Info Hash:** `{analysis['info_hash']}`")
+
+        if 'error' in analysis:
+            lines.append(f"  \n**Error:** {analysis['error']}")
+
+        # verdict
+        if verdicts and url in verdicts:
+            v = verdicts[url]
+            vd = v.get('verdict', 'unknown').replace('_', ' ').upper()
+            conf = v.get('confidence', 'N/A')
+            reason = v.get('reason', 'N/A')
+            lines.append("")
+            lines.append(f"> **AI VERDICT: {vd}**  ")
+            lines.append(f"> Confidence: {conf}  ")
+            lines.append(f"> Reason: {reason}")
+
+        lines.append("")
+        lines.append("---")
+        lines.append("")
+
     return '\n'.join(lines)
