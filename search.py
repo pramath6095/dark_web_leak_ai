@@ -292,7 +292,7 @@ if __name__ == "__main__":
         save_results(results)
         print(f"\n[+] Found {len(results)} unique results")
         for i, item in enumerate(results[:5], 1):
-            print(f"  {i}. {item['title'][:50]} — {item['url'][:50]}")
+            print(f"  {i}. {item['title']} — {item['url']}")
         if len(results) > 5:
             print(f"  ... and {len(results) - 5} more")
     else:

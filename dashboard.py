@@ -87,7 +87,7 @@ def _add_alert(severity, title, evidence="", category=""):
     """append a new alert to the alerts history"""
     alerts = _load_alerts()
     
-    evidence_str = evidence[:500] if evidence else ""
+    evidence_str = evidence if evidence else ""
     
     # prevent consecutive identical alerts (especially for "clear" heartbeats)
     if alerts:
@@ -608,7 +608,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .markdown-body code { background: rgba(0,0,0,0.3); padding: 2px 6px; border-radius: 4px; font-family: var(--mono); font-size: 12.5px; }
   .markdown-body pre { background: rgba(0,0,0,0.5); padding: 16px; border-radius: 8px; overflow-x: auto; margin-bottom: 16px; border: 1px solid var(--border); }
   .markdown-body pre code { background: none; padding: 0; border: none; }
-  .markdown-body table { width: 100%; border-collapse: collapse; margin-bottom: 16px; overflow-x: auto; table-layout: fixed; }
+  .markdown-body table { width: 100%; border-collapse: collapse; margin-bottom: 16px; overflow-x: auto; table-layout: auto; }
   .markdown-body th, .markdown-body td { border: 1px solid var(--border); padding: 10px 14px; text-align: left; white-space: normal; word-break: break-word; }
   .markdown-body th { background: rgba(255,255,255,0.05); color: white; font-weight: 600; position: sticky; top: 0; z-index: 1; }
   .markdown-body tr:nth-child(even) { background: rgba(255,255,255,0.02); }
@@ -624,10 +624,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     border: 1px solid var(--border); border-radius: 10px;
     margin-bottom: 4px; background: rgba(0,0,0,0.15);
   }
-  .ioc-scroll table { margin-bottom: 0; width: 100%; table-layout: fixed; }
+  .ioc-scroll table { margin-bottom: 0; width: 100%; table-layout: auto; }
   .ioc-scroll thead th:not(:empty) ~ * { } /* keep non-empty headers */
   .ioc-scroll thead { visibility: collapse; }
-  .ioc-scroll td { overflow: hidden; text-overflow: ellipsis; }
+  .ioc-scroll td { overflow: visible; text-overflow: clip; white-space: normal; word-break: break-all; }
   .ioc-scroll::-webkit-scrollbar { width: 5px; }
   .ioc-scroll::-webkit-scrollbar-track { background: transparent; }
   .ioc-scroll::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 5px; }
@@ -694,7 +694,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .evidence-box {
     background: rgba(0,0,0,0.3); border-left: 2px solid var(--danger); padding: 8px 12px;
     border-radius: 4px; font-family: var(--mono); font-size: 11px; color: #f87171;
-    margin-top: 8px; max-height: 80px; overflow-y: auto; white-space: pre-wrap; line-height: 1.5;
+    margin-top: 8px; max-height: none; overflow-y: visible; white-space: normal; word-break: break-all; line-height: 1.5;
   }
   .evidence-box.warning { border-left-color: var(--warning); color: #fbbf24; }
   .cat-tag {
@@ -751,13 +751,13 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       <label>Search Query</label>
       <input type="text" id="query" placeholder="e.g. company data breach, leaked credentials…" required>
       <div class="row">
-        <div><label>Engines</label><input type="number" id="engines" value="__MAX_ENGINES__" min="1" max="__MAX_ENGINES__"></div>
-        <div><label>Scrape Limit</label><input type="number" id="limit" value="10" min="1" max="50"></div>
-        <div><label>Threads</label><input type="number" id="threads" value="3" min="1" max="10"></div>
+        <div><label>Engines</label><input type="number" id="engines" value="__MAX_ENGINES__" min="1"></div>
+        <div><label>Scrape Limit</label><input type="number" id="limit" value="10" min="1"></div>
+        <div><label>Threads</label><input type="number" id="threads" value="3" min="1"></div>
       </div>
       <div class="row">
         <div><label>Depth</label><select id="depth"><option value="1">1 — landing page</option><option value="2">2 — follow sublinks</option></select></div>
-        <div><label>Pages / URL</label><input type="number" id="pages" value="1" min="1" max="10"></div>
+        <div><label>Pages / URL</label><input type="number" id="pages" value="1" min="1"></div>
         <div><label>AI Pipeline</label><select id="ai"><option value="1">Enabled</option><option value="0">Disabled</option></select></div>
       </div>
       <div class="row">
@@ -1271,7 +1271,7 @@ async function loadAlerts() {
     }
     badge.textContent = alerts.length + ' Total';
     badge.style.display = '';
-    el.innerHTML = alerts.slice(0, 15).map(a => renderAlert(a)).join('');
+    el.innerHTML = alerts.map(a => renderAlert(a)).join('');
   } catch(e) {}
 }
 
