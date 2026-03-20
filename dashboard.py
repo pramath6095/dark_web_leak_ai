@@ -829,6 +829,23 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
   </div> <!-- END dashboard-grid -->
 
+  <!-- FORUM ACCOUNTS -->
+  <div class="card">
+    <div class="card-header">
+      <div class="h-bar" style="background:var(--success)"></div>
+      <h2>Forum Accounts</h2>
+    </div>
+    <div style="margin-bottom:16px">
+      <div style="display:flex;gap:10px;align-items:flex-end">
+        <div style="flex:1"><label>Domain (.onion)</label><input type="text" id="forum-domain" placeholder="abc123xyz.onion"></div>
+        <div style="flex:1"><label>Username</label><input type="text" id="forum-user" placeholder="username"></div>
+        <div style="flex:1"><label>Password</label><input type="text" id="forum-pass" placeholder="password"></div>
+        <button class="btn btn-sm" style="height:40px;padding:0 18px;margin-bottom:1px" onclick="addForumAccount()">Add Account</button>
+      </div>
+    </div>
+    <div id="forum-accounts-list"><div class="empty-state">No forum accounts stored. Add credentials above or let the scraper auto-register.</div></div>
+  </div>
+
   <!-- JOB STATUS -->
   <div class="card" id="job-status">
     <div class="card-header">
@@ -873,7 +890,7 @@ const runBtn = document.getElementById('run-btn');
 let pollInterval = null;
 let currentJobId = null;
 
-const STEPS = ['searching','filtering','scraping','categorizing','classifying','analyzing_files','summarizing'];
+const STEPS = ['searching','filtering','scraping','authenticating','categorizing','classifying','analyzing_files','summarizing'];
 
 function setButtonRun() {
   runBtn.textContent = 'Run Pipeline';
@@ -1278,11 +1295,60 @@ function renderAlert(a) {
     </div>`;
 }
 
-// Load files, last summary, automation settings, and alerts on page open
+// ── Forum Accounts ────────────────────────────────────────
+async function loadForumAccounts() {
+  try {
+    const res = await fetch('/forum/accounts');
+    const accounts = await res.json();
+    const el = document.getElementById('forum-accounts-list');
+    if (!accounts.length) {
+      el.innerHTML = '<div class="empty-state">No forum accounts stored. Add credentials above or let the scraper auto-register.</div>';
+      return;
+    }
+    let rows = accounts.map(a => `
+      <tr>
+        <td style="font-family:var(--mono);font-size:12px">${escHtml(a.domain)}</td>
+        <td>${escHtml(a.username)}</td>
+        <td style="color:var(--muted);font-size:12px">${escHtml(a.created || '—')}</td>
+        <td style="width:80px"><button class="btn btn-sm" style="color:var(--danger);border-color:rgba(239,68,68,0.3)" onclick="deleteForumAccount('${escHtml(a.domain)}')">Delete</button></td>
+      </tr>`).join('');
+    el.innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:13px">
+      <thead><tr style="border-bottom:1px solid var(--border);text-align:left">
+        <th style="padding:8px 12px;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:0.05em">Domain</th>
+        <th style="padding:8px 12px;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:0.05em">Username</th>
+        <th style="padding:8px 12px;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:0.05em">Created</th>
+        <th></th>
+      </tr></thead><tbody>${rows}</tbody></table>`;
+  } catch(e) {}
+}
+
+async function addForumAccount() {
+  const domain = document.getElementById('forum-domain').value.trim();
+  const username = document.getElementById('forum-user').value.trim();
+  const password = document.getElementById('forum-pass').value.trim();
+  if (!domain || !username || !password) return;
+  await fetch('/forum/accounts', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({domain, username, password})
+  });
+  document.getElementById('forum-domain').value = '';
+  document.getElementById('forum-user').value = '';
+  document.getElementById('forum-pass').value = '';
+  loadForumAccounts();
+}
+
+async function deleteForumAccount(domain) {
+  await fetch('/forum/accounts/' + encodeURIComponent(domain), {method: 'DELETE'});
+  loadForumAccounts();
+}
+
+// Load files, last summary, automation settings, alerts, and forum accounts on page open
 loadFiles();
 loadLastSummary();
 loadAutoSettings();
 loadAlerts();
+loadForumAccounts();
 </script>
 </body>
 </html>"""
@@ -1459,6 +1525,43 @@ def set_auto_settings():
 def get_auto_alerts():
     """return alert history"""
     return jsonify(_load_alerts())
+
+
+# ============================================================
+# FORUM ACCOUNT ROUTES
+# ============================================================
+
+@app.route("/forum/accounts", methods=["GET"])
+def list_forum_accounts():
+    """list stored forum accounts (no passwords exposed)"""
+    from forum_auth import get_account_manager
+    mgr = get_account_manager()
+    return jsonify(mgr.list_accounts())
+
+
+@app.route("/forum/accounts", methods=["POST"])
+def add_forum_account():
+    """manually add a forum account"""
+    from forum_auth import get_account_manager
+    data = request.get_json()
+    domain = data.get("domain", "").strip()
+    username = data.get("username", "").strip()
+    password = data.get("password", "").strip()
+    if not domain or not username or not password:
+        return jsonify({"error": "domain, username, and password required"}), 400
+    mgr = get_account_manager()
+    mgr.save_account(domain, username, password)
+    return jsonify({"status": "saved"})
+
+
+@app.route("/forum/accounts/<path:domain>", methods=["DELETE"])
+def delete_forum_account(domain):
+    """remove a stored forum account"""
+    from forum_auth import get_account_manager
+    mgr = get_account_manager()
+    if mgr.delete_account(domain):
+        return jsonify({"status": "deleted"})
+    return jsonify({"error": "not found"}), 404
 
 
 if __name__ == "__main__":

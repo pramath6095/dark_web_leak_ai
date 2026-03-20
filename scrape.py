@@ -14,6 +14,9 @@ warnings.filterwarnings("ignore")
 import functools
 print = functools.partial(print, flush=True)
 
+# forum authentication
+from forum_auth import is_login_wall, get_forum_session, extract_domain
+
 # tor proxy config
 TOR_PROXY_HOST = os.getenv("TOR_PROXY_HOST", "127.0.0.1")
 TOR_PROXY_PORT = os.getenv("TOR_PROXY_PORT", "9150")
@@ -67,6 +70,7 @@ ERROR_MESSAGES = {
     "http": "[ERROR: HTTP error]",
     "parse": "[ERROR: Parse error]",
     "unknown": "[ERROR: Request failed]",
+    "auth_required": "[AUTH_REQUIRED: Login wall detected, authentication failed]",
 }
 
 
@@ -124,6 +128,18 @@ async def scrape_url(url: str, stream_id: int) -> tuple:
             async with session.get(url, headers=headers) as response:
                 if response.status == 200:
                     html = await response.text()
+                    
+                    # --- LOGIN WALL DETECTION ---
+                    if is_login_wall(html):
+                        print(f"  [AUTH] Login wall detected on {url[:45]}...")
+                        auth_html = await _try_authenticated_scrape(url, stream_id, html)
+                        if auth_html:
+                            html = auth_html
+                            print(f"  [AUTH] ✓ Got authenticated content for {url[:45]}...")
+                        else:
+                            print(f"  [AUTH] ✗ Could not authenticate for {url[:45]}...")
+                            return url, ERROR_MESSAGES["auth_required"], [], html
+                    
                     soup = BeautifulSoup(html, "html.parser")
                     
                     # extract sublinks before stripping elements (for depth scraping)
@@ -145,6 +161,39 @@ async def scrape_url(url: str, stream_id: int) -> tuple:
         return url, ERROR_MESSAGES["timeout"], [], ''
     except Exception as e:
         return url, sanitize_error(e), [], ''
+
+
+async def _try_authenticated_scrape(url: str, stream_id: int, original_html: str) -> str:
+    """
+    attempt to authenticate and re-fetch a login-walled page.
+    returns the authenticated HTML on success, None on failure.
+    """
+    forum_session = get_forum_session()
+    
+    try:
+        auth_session, success = await forum_session.get_authenticated_session(url, stream_id + 1000)
+        
+        if success:
+            # re-fetch the page with authenticated session
+            headers = get_browser_headers()
+            try:
+                async with auth_session.get(url, headers=headers) as resp:
+                    if resp.status == 200:
+                        html = await resp.text()
+                        # verify we're past the login wall
+                        if not is_login_wall(html):
+                            return html
+                        else:
+                            print(f"  [AUTH] Still behind login wall after authentication")
+                            return None
+            except Exception as e:
+                print(f"  [AUTH] Re-fetch failed: {str(e)[:60]}")
+                return None
+        
+        return None
+    except Exception as e:
+        print(f"  [AUTH] Authentication flow error: {str(e)[:60]}")
+        return None
 
 
 async def scrape_url_paginated(url: str, stream_id: int, max_pages: int = 1) -> tuple:
@@ -388,6 +437,13 @@ async def scrape_all_async(urls: list, max_workers: int = 3, depth: int = 1, max
                     results[new_sublinks[i]] = f"[ERROR: {str(result)[:100]}]"
             
             print(f"[+] Depth 2 complete: scraped {len(sub_results)} additional pages")
+    
+    # cleanup forum sessions
+    try:
+        forum_session = get_forum_session()
+        await forum_session.close_all()
+    except Exception:
+        pass
     
     return results, html_cache
 
