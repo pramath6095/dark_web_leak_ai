@@ -615,7 +615,7 @@ def format_file_analysis(results: dict, verdicts: dict = None) -> str:
     
     for i, (url, analysis) in enumerate(results.items(), 1):
         lines.append(f"\n{'─' * 60}")
-        lines.append(f"[{i}] {url[:80]}")
+        lines.append(f"[{i}] {url}")
         lines.append(f"{'─' * 60}")
         
         if isinstance(analysis, dict):
