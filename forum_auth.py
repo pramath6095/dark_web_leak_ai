@@ -21,6 +21,15 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import functools
+import sys
+
+# fix Windows console encoding — .onion pages often contain Unicode symbols
+# that the default charmap codec can't handle
+if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
+    import io
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+
 print = functools.partial(print, flush=True)
 
 import warnings
@@ -559,27 +568,33 @@ class ForumSession:
 
         return None
 
-    def find_register_form(self, html: str, url: str) -> dict:
+    def find_register_form(self, html: str, url: str, skip_links: bool = False) -> dict:
         """
         parse registration form from HTML.
         returns {action, fields, username_field, password_field, email_field, captcha_info} or None.
+        when skip_links=True, only scans forms (used when we already followed a registration link).
         """
         soup = BeautifulSoup(html, "html.parser")
 
-        # find registration links first
-        register_url = None
-        for a in soup.find_all("a", href=True):
-            href = a.get("href", "").lower()
-            text = a.get_text(strip=True).lower()
-            if any(kw in href for kw in ["register", "signup", "sign-up", "account/create", "create-account"]):
-                register_url = urljoin(url, a["href"])
-                break
-            if any(kw in text for kw in ["register", "sign up", "create account"]):
-                register_url = urljoin(url, a["href"])
-                break
+        # find registration links first (skip when we're already on a registration page)
+        if not skip_links:
+            register_url = None
+            for a in soup.find_all("a", href=True):
+                href = a.get("href", "").lower()
+                text = a.get_text(strip=True).lower()
+                if any(kw in href for kw in ["register", "signup", "sign-up", "account/create", "create-account"]):
+                    register_url = urljoin(url, a["href"])
+                    break
+                if any(kw in text for kw in ["register", "sign up", "create account"]):
+                    register_url = urljoin(url, a["href"])
+                    break
 
-        if register_url:
-            return {"register_url": register_url}
+            if register_url:
+                return {"register_url": register_url}
+
+        # check if the current URL itself suggests a registration page
+        url_lower = url.lower()
+        url_is_register = any(kw in url_lower for kw in ["register", "signup", "sign-up", "create", "join"])
 
         # look for registration form on current page
         for form in soup.find_all("form"):
@@ -587,18 +602,37 @@ class ForumSession:
             form_id = form.get("id", "").lower()
             form_text = form.get_text().lower()
 
+            # has password fields? (required for registration forms)
+            password_inputs = form.find_all("input", {"type": "password"})
+            if not password_inputs:
+                continue
+
+            # check submit button text
+            submit_text = ""
+            submit_btn = form.find("input", {"type": "submit"})
+            if submit_btn:
+                submit_text = submit_btn.get("value", "").lower()
+            for btn in form.find_all("button"):
+                btn_type = btn.get("type", "").lower()
+                if btn_type in ("", "submit"):
+                    submit_text = btn.get_text(strip=True).lower()
+                    break
+
             is_register = (
+                # action/id contain registration keywords
                 any(kw in action for kw in ["register", "signup", "create"]) or
-                any(kw in form_id for kw in ["register", "signup", "create"]) or
-                ("register" in form_text[:200] and "password" in form_text)
+                any(kw in form_id for kw in ["register", "signup", "create", "registration"]) or
+                # form text mentions registration
+                ("register" in form_text[:500] and "password" in form_text) or
+                # submit button says register/signup/create
+                any(kw in submit_text for kw in ["register", "sign up", "create account", "join"]) or
+                # URL is a registration page and form has >=2 password fields
+                (url_is_register and len(password_inputs) >= 2) or
+                # when skip_links=True, we're ON the registration page — any form with >=2 password fields is likely it
+                (skip_links and len(password_inputs) >= 2)
             )
 
             if not is_register:
-                continue
-
-            # has password fields (for registration)
-            password_inputs = form.find_all("input", {"type": "password"})
-            if not password_inputs:
                 continue
 
             form_action = resolve_form_action(url, form.get("action", ""))
@@ -612,6 +646,7 @@ class ForumSession:
 
             # find field names
             username_field = email_field = password_field = password_confirm_field = None
+            extra_password_fields = []  # for PIN codes, withdrawal passwords, etc.
 
             for inp in form.find_all("input"):
                 name = inp.get("name", "").lower()
@@ -620,8 +655,15 @@ class ForumSession:
                 if input_type == "password":
                     if not password_field:
                         password_field = inp.get("name")
+                    elif not password_confirm_field:
+                        # second password = confirm, unless it's clearly a pin
+                        if any(kw in name for kw in ["pin", "withdraw", "transaction"]):
+                            extra_password_fields.append(inp.get("name"))
+                        else:
+                            password_confirm_field = inp.get("name")
                     else:
-                        password_confirm_field = inp.get("name")
+                        # 3rd+ password fields (pin codes, withdrawal passwords, etc.)
+                        extra_password_fields.append(inp.get("name"))
                 elif input_type in ("text", "email"):
                     if "email" in name or "mail" in name:
                         email_field = inp.get("name")
@@ -640,6 +682,7 @@ class ForumSession:
                 "username_field": username_field or "username",
                 "password_field": password_field or "password",
                 "password_confirm_field": password_confirm_field,
+                "extra_password_fields": extra_password_fields,
                 "email_field": email_field,
                 "captcha_info": captcha_info,
             }
@@ -703,6 +746,58 @@ class ForumSession:
 
         # find login form
         login_form = self.find_login_form(html, url)
+
+        # if no login form on this page, try to find and follow login links
+        if not login_form:
+            login_url = None
+            soup = BeautifulSoup(html, "html.parser")
+
+            # look for login links on the page
+            for a in soup.find_all("a", href=True):
+                href = a.get("href", "").lower()
+                text = a.get_text(strip=True).lower()
+                if any(kw in href for kw in ["login", "signin", "sign-in", "account/login"]):
+                    login_url = urljoin(url, a["href"])
+                    break
+                if any(kw in text for kw in ["log in", "login", "sign in"]) and "register" not in text:
+                    login_url = urljoin(url, a["href"])
+                    break
+
+            # if no login link found, try common login URL patterns
+            if not login_url:
+                from urllib.parse import urljoin as _urljoin
+                common_paths = [
+                    "/login", "/login/", "/signin", "/signin/",
+                    "/member.php?action=login", "/index.php?route=account/login",
+                    "/account/login", "/auth/login", "/ucp.php?mode=login",
+                ]
+                for path in common_paths:
+                    test_url = _urljoin(url, path)
+                    try:
+                        async with session.get(test_url, headers=BROWSER_HEADERS) as resp:
+                            if resp.status == 200:
+                                test_html = await resp.text()
+                                test_form = self.find_login_form(test_html, test_url)
+                                if test_form:
+                                    login_url = test_url
+                                    html = test_html
+                                    login_form = test_form
+                                    break
+                    except Exception:
+                        continue
+
+            # if we found a login link, fetch and parse
+            if login_url and not login_form:
+                print(f"  [AUTH] Following login link: {login_url[:60]}...")
+                try:
+                    async with session.get(login_url, headers=BROWSER_HEADERS) as resp:
+                        if resp.status == 200:
+                            html = await resp.text()
+                            login_form = self.find_login_form(html, login_url)
+                            url = login_url  # update url for referer header
+                except Exception as e:
+                    print(f"  [AUTH] Failed to fetch login page: {str(e)[:60]}")
+
         if not login_form:
             print(f"  [AUTH] No login form found on {domain}")
             return False
@@ -820,7 +915,8 @@ class ForumSession:
                         print(f"  [AUTH] Registration page returned HTTP {resp.status}")
                         return None
                     reg_html = await resp.text()
-                    reg_info = self.find_register_form(reg_html, reg_url)
+                    # skip_links=True: we're already on the registration page, scan forms directly
+                    reg_info = self.find_register_form(reg_html, reg_url, skip_links=True)
                     if not reg_info or "register_url" in reg_info:
                         print(f"  [AUTH] No registration form found on registration page")
                         return None
@@ -845,6 +941,18 @@ class ForumSession:
 
         if reg_info.get("password_confirm_field"):
             post_data[reg_info["password_confirm_field"]] = password
+
+        # fill extra password fields (PIN codes, withdrawal passwords, etc.)
+        for extra_field in reg_info.get("extra_password_fields", []):
+            if any(kw in extra_field.lower() for kw in ["pin"]):
+                # generate a random 6-digit PIN
+                post_data[extra_field] = str(random.randint(100000, 999999))
+                print(f"  [AUTH] Filled PIN field '{extra_field}' with random PIN")
+            else:
+                # use the same password for other password fields
+                post_data[extra_field] = password
+                print(f"  [AUTH] Filled extra password field '{extra_field}'")
+
         if reg_info.get("email_field"):
             post_data[reg_info["email_field"]] = email
 
@@ -992,12 +1100,20 @@ class ForumSession:
                     self._session_cache[domain] = session
                     return session, True
 
-            # step 3: auth failed
+            # step 3: auth failed — close the session to prevent resource leaks
             print(f"  [AUTH] Could not authenticate to {domain}")
+            try:
+                await session.close()
+            except Exception:
+                pass
             return session, False
 
         except Exception as e:
             print(f"  [AUTH] Authentication flow failed for {domain}: {str(e)[:80]}")
+            try:
+                await session.close()
+            except Exception:
+                pass
             return session, False
 
     async def close_all(self):
