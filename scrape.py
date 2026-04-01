@@ -1,6 +1,8 @@
 import os
+import json
 import asyncio
 import random
+from datetime import datetime
 from bs4 import BeautifulSoup
 from aiohttp import ClientSession, ClientTimeout
 from aiohttp_socks import ProxyConnector
@@ -16,6 +18,44 @@ print = functools.partial(print, flush=True)
 
 # forum authentication
 from forum_auth import is_login_wall, get_forum_session, extract_domain
+
+# ── login wall tracking ──
+_LOGIN_WALLS_FILE = os.path.join("output", "login_walls.json")
+
+def _load_login_walls() -> list:
+    if os.path.isfile(_LOGIN_WALLS_FILE):
+        try:
+            with open(_LOGIN_WALLS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, ValueError):
+            pass
+    return []
+
+def _save_login_wall(url: str, status: str):
+    """Append a login-wall detection entry. status = 'auth_success' | 'auth_failed'"""
+    os.makedirs("output", exist_ok=True)
+    walls = _load_login_walls()
+    # avoid duplicate URLs — update status if already tracked
+    for entry in walls:
+        if entry["url"] == url:
+            entry["status"] = status
+            entry["last_seen"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            with open(_LOGIN_WALLS_FILE, "w", encoding="utf-8") as f:
+                json.dump(walls, f, indent=2)
+            return
+    walls.append({
+        "url": url,
+        "domain": extract_domain(url),
+        "status": status,
+        "first_seen": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "last_seen": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    })
+    with open(_LOGIN_WALLS_FILE, "w", encoding="utf-8") as f:
+        json.dump(walls, f, indent=2)
+
+def get_login_walls() -> list:
+    """Public accessor for tracked login walls."""
+    return _load_login_walls()
 
 # tor proxy config
 TOR_PROXY_HOST = os.getenv("TOR_PROXY_HOST", "127.0.0.1")
@@ -136,8 +176,10 @@ async def scrape_url(url: str, stream_id: int) -> tuple:
                         if auth_html:
                             html = auth_html
                             print(f"  [AUTH] ✓ Got authenticated content for {url[:45]}...")
+                            _save_login_wall(url, "auth_success")
                         else:
                             print(f"  [AUTH] ✗ Could not authenticate for {url[:45]}...")
+                            _save_login_wall(url, "auth_failed")
                             return url, ERROR_MESSAGES["auth_required"], [], html
                     
                     soup = BeautifulSoup(html, "html.parser")

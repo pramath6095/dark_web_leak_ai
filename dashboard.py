@@ -39,7 +39,7 @@ def _load_auto_settings():
                 return json.load(f)
         except (json.JSONDecodeError, ValueError):
             pass
-    return {"enabled": False, "interval_hours": 6, "webhook_url": ""}
+    return {"enabled": False, "interval_hours": 6.0, "webhook_url": ""}
 
 
 def _save_auto_settings(settings):
@@ -202,7 +202,7 @@ def _auto_run():
     job_id = f"auto_{int(time.time())}_{os.getpid()}"
     config = {
         "use_ai": True,
-        "ai_provider": "gemini",
+        "ai_provider": "ollama",
         "ollama_model": "",
         "num_engines": MAX_ENGINES,
         "scrape_limit": 10,
@@ -241,13 +241,31 @@ def _run_pipeline(job_id: str, query: str, config: dict):
     """run the main pipeline in a background thread."""
     import io
     import sys
+    import builtins
     from contextlib import redirect_stdout
 
     with _job_lock:
         _jobs[job_id]["status"] = "running"
         _jobs[job_id]["started"] = time.time()
+        _jobs[job_id]["logs"] = []
 
     output_buffer = io.StringIO()
+
+    # capture print() calls into the job's log buffer
+    _original_print = builtins.print
+    def _capturing_print(*args, **kwargs):
+        msg = " ".join(str(a) for a in args)
+        with _job_lock:
+            job = _jobs.get(job_id)
+            if job is not None:
+                job.setdefault("logs", []).append(msg)
+                # keep last 200 lines
+                if len(job["logs"]) > 200:
+                    job["logs"] = job["logs"][-200:]
+        kwargs.setdefault("flush", True)
+        _original_print(*args, **kwargs)
+
+    builtins.print = _capturing_print
 
     try:
         from search import search_dark_web, save_results, get_urls_from_results
@@ -401,6 +419,11 @@ def _run_pipeline(job_id: str, query: str, config: dict):
             _jobs[job_id]["status"] = "error"
             _jobs[job_id]["error"] = str(e)[:200]
 
+    finally:
+        # restore original print
+        import builtins as _bi
+        _bi.print = _original_print
+
 
 # ============================================================
 # HTML TEMPLATE
@@ -514,6 +537,25 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .progress-step { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; }
   .progress-step.active { color: var(--accent); }
   .summary-preview { background: var(--surface2); border: 1px solid var(--border); border-radius: 10px; padding: 16px; font-size: 13px; line-height: 1.7; color: #cbd5e1; white-space: normal; max-height: 350px; overflow-y: auto; overflow-x: auto; margin-top: 12px; }
+
+  /* LIVE LOG PANEL */
+  .log-panel {
+    background: #080808; border: 1px solid var(--border); border-radius: 10px;
+    padding: 14px 16px; margin-top: 14px; max-height: 260px; overflow-y: auto;
+    font-family: var(--mono); font-size: 12px; line-height: 1.7;
+    color: #6ee7b7; position: relative;
+  }
+  .log-panel::before {
+    content: '● LIVE'; position: absolute; top: 10px; right: 14px;
+    font-size: 10px; font-weight: 700; letter-spacing: 0.08em;
+    color: var(--success); animation: pulse 1.2s ease-in-out infinite;
+  }
+  .log-panel.done::before { content: 'COMPLETE'; color: var(--muted); animation: none; }
+  .log-line { white-space: pre-wrap; word-break: break-all; }
+  .log-line.error { color: #f87171; }
+  .log-line.warn { color: #fbbf24; }
+  .log-line.info { color: #6ee7b7; }
+  .log-line.step { color: var(--accent); font-weight: 600; }
 
   /* FILE CARDS */
   .files-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
@@ -715,6 +757,64 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .auto-status-pill.inactive { background: rgba(100,116,139,0.15); border: 1px solid var(--border); color: var(--muted); }
   .status-dot-sm { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
   .status-dot-sm.pulse { box-shadow: 0 0 6px currentColor; animation: pulse 1.2s ease-in-out infinite; }
+
+  /* ── FORUM ACCOUNTS 2-COL LAYOUT ── */
+  .forum-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 24px;
+  }
+  .forum-panel {
+    min-width: 0; /* prevent overflow */
+  }
+  .forum-panel-header {
+    display: flex; align-items: center; gap: 8px;
+    margin-bottom: 14px;
+  }
+  .forum-panel-header .panel-dot {
+    width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+  }
+  .forum-panel-header h3 {
+    font-size: 12px; font-weight: 600; color: var(--muted);
+    text-transform: uppercase; letter-spacing: 0.06em;
+  }
+  .login-wall-item {
+    background: var(--surface2); border: 1px solid var(--border); border-radius: 8px;
+    padding: 10px 14px; margin-bottom: 8px;
+    transition: border-color 0.2s;
+  }
+  .login-wall-item:hover { border-color: #3a3a3a; }
+  .login-wall-url {
+    font-family: var(--mono); font-size: 11px; color: var(--text);
+    word-break: break-all; line-height: 1.5;
+  }
+  .login-wall-meta {
+    display: flex; align-items: center; gap: 8px; margin-top: 6px;
+    font-size: 10px; color: var(--muted);
+  }
+  .login-wall-badge {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 2px 8px; border-radius: 10px; font-size: 10px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.04em;
+  }
+  .login-wall-badge.success {
+    background: rgba(16,185,129,0.12); color: var(--success); border: 1px solid rgba(16,185,129,0.25);
+  }
+  .login-wall-badge.failed {
+    background: rgba(239,68,68,0.12); color: var(--danger); border: 1px solid rgba(239,68,68,0.25);
+  }
+  .login-walls-scroll {
+    max-height: 260px; overflow-y: auto;
+  }
+  .login-walls-scroll::-webkit-scrollbar { width: 5px; }
+  .login-walls-scroll::-webkit-scrollbar-track { background: transparent; }
+  .login-walls-scroll::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 5px; }
+  .login-walls-scroll::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.2); }
+  .wall-count-pill {
+    margin-left: auto;
+    padding: 2px 10px; border-radius: 10px; font-size: 10px; font-weight: 600;
+    background: rgba(239,68,68,0.12); color: var(--danger); border: 1px solid rgba(239,68,68,0.2);
+  }
 </style>
 </head>
 <body>
@@ -757,15 +857,15 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         <div>
           <label>AI Provider</label>
           <select id="provider" onchange="onProviderChange()">
-            <option value="gemini">Gemini (default)</option>
-            <option value="ollama">Ollama (Local)</option>
+            <option value="ollama" selected>Ollama (Local)</option>
+            <option value="gemini">Gemini</option>
             <option value="anthropic">Anthropic</option>
             <option value="deepseek">DeepSeek</option>
             <option value="groq">Groq</option>
             <option value="mistral">Mistral</option>
           </select>
         </div>
-        <div id="ollama-model-wrapper" style="display:none">
+        <div id="ollama-model-wrapper">
           <label>Ollama Model</label>
           <select id="ollama-model">
             <option value="">Loading models…</option>
@@ -795,13 +895,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           <span class="slider-toggle"></span>
         </label>
       </div>
-      <label>Monitor Interval</label>
-      <select id="auto-interval" style="margin-bottom:16px">
-        <option value="1">Every 1 Hour</option>
-        <option value="6" selected>Every 6 Hours</option>
-        <option value="12">Every 12 Hours</option>
-        <option value="24">Every 24 Hours</option>
-      </select>
+      <label>Monitor Interval (Hours)</label>
+      <input type="number" id="auto-interval" value="6" min="0.1" max="168" step="0.5" style="margin-bottom:16px" placeholder="e.g. 0.5, 1, 6, 24">
       <label>Webhook URL (Discord/Slack)</label>
       <input type="text" id="auto-webhook" placeholder="https://..." style="margin-bottom:16px">
       <div style="flex:1"></div>
@@ -829,21 +924,41 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
   </div> <!-- END dashboard-grid -->
 
-  <!-- FORUM ACCOUNTS -->
+  <!-- FORUM ACCOUNTS + LOGIN WALLS (2-col) -->
   <div class="card">
     <div class="card-header">
       <div class="h-bar" style="background:var(--success)"></div>
-      <h2>Forum Accounts</h2>
+      <h2>Forum Accounts & Login Walls</h2>
     </div>
-    <div style="margin-bottom:16px">
-      <div style="display:flex;gap:10px;align-items:flex-end">
-        <div style="flex:1"><label>Domain (.onion)</label><input type="text" id="forum-domain" placeholder="abc123xyz.onion"></div>
-        <div style="flex:1"><label>Username</label><input type="text" id="forum-user" placeholder="username"></div>
-        <div style="flex:1"><label>Password</label><input type="text" id="forum-pass" placeholder="password"></div>
-        <button class="btn btn-sm" style="height:40px;padding:0 18px;margin-bottom:1px" onclick="addForumAccount()">Add Account</button>
+    <div class="forum-grid">
+      <!-- LEFT: Account Management -->
+      <div class="forum-panel">
+        <div class="forum-panel-header">
+          <div class="panel-dot" style="background:var(--success)"></div>
+          <h3>Stored Credentials</h3>
+        </div>
+        <div style="margin-bottom:14px">
+          <div style="display:flex;gap:8px;align-items:flex-end">
+            <div style="flex:1"><label>Domain (.onion)</label><input type="text" id="forum-domain" placeholder="abc123xyz.onion"></div>
+            <div style="flex:1"><label>Username</label><input type="text" id="forum-user" placeholder="username"></div>
+            <div style="flex:1"><label>Password</label><input type="text" id="forum-pass" placeholder="password"></div>
+            <button class="btn btn-sm" style="height:40px;padding:0 18px;margin-bottom:1px" onclick="addForumAccount()">Add Account</button>
+          </div>
+        </div>
+        <div id="forum-accounts-list"><div class="empty-state">No forum accounts stored.</div></div>
+      </div>
+      <!-- RIGHT: Detected Login Walls -->
+      <div class="forum-panel">
+        <div class="forum-panel-header">
+          <div class="panel-dot" style="background:var(--danger)"></div>
+          <h3>Detected Login Walls</h3>
+          <span class="wall-count-pill" id="wall-count-pill" style="display:none">0</span>
+        </div>
+        <div class="login-walls-scroll" id="login-walls-list">
+          <div class="empty-state">No login walls detected yet. Run a scan to discover them.</div>
+        </div>
       </div>
     </div>
-    <div id="forum-accounts-list"><div class="empty-state">No forum accounts stored. Add credentials above or let the scraper auto-register.</div></div>
   </div>
 
   <!-- JOB STATUS -->
@@ -853,6 +968,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       <h2>Job Status</h2>
     </div>
     <div id="job-info"></div>
+    <div id="job-log-panel"></div>
   </div>
 
   <!-- REPORTS -->
@@ -888,7 +1004,9 @@ const statusDiv = document.getElementById('job-status');
 const jobInfo = document.getElementById('job-info');
 const runBtn = document.getElementById('run-btn');
 let pollInterval = null;
+let logPollInterval = null;
 let currentJobId = null;
+let logLineCount = 0;
 
 const STEPS = ['searching','filtering','scraping','authenticating','categorizing','classifying','analyzing_files','summarizing'];
 
@@ -933,9 +1051,12 @@ form.addEventListener('submit', async (e) => {
   const data = await res.json();
   currentJobId = data.job_id;
   statusDiv.style.display = 'block';
+  logLineCount = 0;
+  document.getElementById('job-log-panel').innerHTML = '<div class="log-panel" id="live-log"></div>';
   renderJobRunning('queued', null);
   setButtonAbort();
   pollInterval = setInterval(() => pollJob(data.job_id), 2000);
+  logPollInterval = setInterval(() => pollLogs(data.job_id), 1500);
 });
 
 async function pollJob(jobId) {
@@ -945,20 +1066,28 @@ async function pollJob(jobId) {
   } else if (s.status === 'done') {
     renderJobDone(s);
     clearInterval(pollInterval);
+    clearInterval(logPollInterval);
+    pollLogs(jobId, true);
     currentJobId = null;
     setButtonRun();
     loadFiles();
     loadAlerts();
+    loadLoginWalls();
   } else if (s.status === 'aborted') {
     renderJobAborted();
     clearInterval(pollInterval);
+    clearInterval(logPollInterval);
+    pollLogs(jobId, true);
     currentJobId = null;
     setButtonRun();
     loadFiles();
     loadAlerts();
+    loadLoginWalls();
   } else if (s.status === 'error') {
     renderJobError(s.error);
     clearInterval(pollInterval);
+    clearInterval(logPollInterval);
+    pollLogs(jobId, true);
     currentJobId = null;
     setButtonRun();
   }
@@ -986,7 +1115,10 @@ function renderJobDone(s) {
       <div class="job-stat"><div class="label">URLs Found</div><div class="value">${s.results_count || 0}</div></div>
       <div class="job-stat"><div class="label">Pages Scraped</div><div class="value">${s.scraped_count || 0}</div></div>
     </div>
-    ${s.summary_preview ? `<div class="summary-preview markdown-body">${typeof marked !== 'undefined' ? marked.parse(s.summary_preview) : escHtml(s.summary_preview)}</div>` : ''}`;
+    ${s.summary_preview ? `<div class="summary-preview markdown-body">${typeof marked !== 'undefined' ? marked.parse(s.summary_preview) : escHtml(s.summary_preview)}</div>` : ''}
+    <div id="file-analysis-section"></div>`;
+  // load file analysis below summary
+  loadFileAnalysis();
 }
 
 function renderJobAborted() {
@@ -1167,6 +1299,58 @@ async function loadOllamaModels() {
   }
 }
 
+// ── Live log polling ─────────────────────────────────────
+async function pollLogs(jobId, isFinal) {
+  try {
+    const res = await fetch('/logs/' + jobId + '?after=' + logLineCount);
+    const data = await res.json();
+    if (data.lines && data.lines.length) {
+      const panel = document.getElementById('live-log');
+      if (!panel) return;
+      data.lines.forEach(line => {
+        const div = document.createElement('div');
+        div.className = 'log-line ' + classifyLogLine(line);
+        div.textContent = line;
+        panel.appendChild(div);
+      });
+      logLineCount = data.total;
+      panel.scrollTop = panel.scrollHeight;
+    }
+    if (isFinal) {
+      const panel = document.getElementById('live-log');
+      if (panel) panel.classList.add('done');
+    }
+  } catch(e) {}
+}
+
+function classifyLogLine(line) {
+  if (line.includes('[!]') || line.includes('ERROR') || line.includes('failed')) return 'error';
+  if (line.includes('[*]') || line.includes('STEP')) return 'step';
+  if (line.includes('[+]')) return 'info';
+  if (line.includes('WARNING') || line.includes('[WARN]')) return 'warn';
+  return '';
+}
+
+// ── File analysis loader ─────────────────────────────────
+async function loadFileAnalysis() {
+  try {
+    const res = await fetch('/results/file_analysis.txt');
+    if (!res.ok) return;
+    const text = await res.text();
+    if (!text.trim()) return;
+    const section = document.getElementById('file-analysis-section');
+    if (!section) return;
+    section.innerHTML = `
+      <div style="margin-top:16px">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+          <div style="width:3px;height:18px;border-radius:2px;background:var(--danger);flex-shrink:0"></div>
+          <h3 style="font-size:13px;font-weight:600;color:var(--text);text-transform:uppercase;letter-spacing:0.04em">File Analysis</h3>
+        </div>
+        <div class="summary-preview markdown-body">${typeof marked !== 'undefined' ? marked.parse(text) : '<pre>' + escHtml(text) + '</pre>'}</div>
+      </div>`;
+  } catch(e) {}
+}
+
 // ── Load persisted summary on page open ─────────────────
 async function loadLastSummary() {
   try {
@@ -1193,7 +1377,7 @@ async function loadAutoSettings() {
     const res = await fetch('/automation/settings');
     const data = await res.json();
     document.getElementById('auto-enabled').checked = data.enabled || false;
-    document.getElementById('auto-interval').value = String(data.interval_hours || 6);
+    document.getElementById('auto-interval').value = data.interval_hours || 6;
     document.getElementById('auto-webhook').value = data.webhook_url || '';
     updateAutoPill(data.enabled);
     if (data.enabled && data.next_run_ts) {
@@ -1206,7 +1390,7 @@ async function loadAutoSettings() {
 async function saveAutoSettings() {
   const body = {
     enabled: document.getElementById('auto-enabled').checked,
-    interval_hours: parseInt(document.getElementById('auto-interval').value),
+    interval_hours: parseFloat(document.getElementById('auto-interval').value) || 6,
     webhook_url: document.getElementById('auto-webhook').value,
   };
   const res = await fetch('/automation/settings', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
@@ -1343,12 +1527,47 @@ async function deleteForumAccount(domain) {
   loadForumAccounts();
 }
 
-// Load files, last summary, automation settings, alerts, and forum accounts on page open
+// ── Login Walls (right panel) ──────────────────────────────
+async function loadLoginWalls() {
+  try {
+    const res = await fetch('/forum/login-walls');
+    const walls = await res.json();
+    const el = document.getElementById('login-walls-list');
+    const pill = document.getElementById('wall-count-pill');
+    if (!walls.length) {
+      el.innerHTML = '<div class="empty-state">No login walls detected yet. Run a scan to discover them.</div>';
+      pill.style.display = 'none';
+      return;
+    }
+    pill.textContent = walls.length;
+    pill.style.display = '';
+    el.innerHTML = walls.map(w => {
+      const isOk = w.status === 'auth_success';
+      const badgeCls = isOk ? 'success' : 'failed';
+      const badgeText = isOk ? '✓ Authenticated' : '✗ Auth Failed';
+      return `
+        <div class="login-wall-item">
+          <div class="login-wall-url">${escHtml(w.url)}</div>
+          <div class="login-wall-meta">
+            <span class="login-wall-badge ${badgeCls}">${badgeText}</span>
+            <span>${escHtml(w.domain || '')}</span>
+            <span>·</span>
+            <span>${escHtml(w.last_seen || w.first_seen || '')}</span>
+          </div>
+        </div>`;
+    }).join('');
+  } catch(e) {}
+}
+
+// Load files, last summary, automation settings, alerts, forum accounts, and login walls on page open
 loadFiles();
 loadLastSummary();
 loadAutoSettings();
 loadAlerts();
 loadForumAccounts();
+loadLoginWalls();
+// ollama is default, load models on page load
+loadOllamaModels();
 </script>
 </body>
 </html>"""
@@ -1373,7 +1592,7 @@ def run_pipeline():
     job_id = f"job_{int(time.time())}_{os.getpid()}"
     config = {
         "use_ai":        data.get("use_ai", True),
-        "ai_provider":   data.get("ai_provider", "gemini"),
+        "ai_provider":   data.get("ai_provider", "ollama"),
         "ollama_model":  data.get("ollama_model", ""),
         "num_engines":   data.get("num_engines", MAX_ENGINES),
         "scrape_limit":  data.get("scrape_limit", 10),
@@ -1402,7 +1621,8 @@ def job_status(job_id):
         job = _jobs.get(job_id)
     if not job:
         return jsonify({"error": "not found"}), 404
-    return jsonify(job)
+    # exclude logs from status response (served via /logs endpoint)
+    return jsonify({k: v for k, v in job.items() if k != "logs"})
 
 
 @app.route("/results")
@@ -1444,6 +1664,21 @@ def abort_job(job_id):
             return jsonify({"error": "job already finished"}), 400
         job["abort"] = True
     return jsonify({"status": "abort_requested"})
+
+
+@app.route("/logs/<job_id>")
+def job_logs(job_id):
+    """return log lines for a job, with pagination via ?after=N"""
+    after = int(request.args.get("after", 0))
+    with _job_lock:
+        job = _jobs.get(job_id)
+        if not job:
+            return jsonify({"error": "not found"}), 404
+        logs = job.get("logs", [])
+        total = len(logs)
+        new_lines = logs[after:] if after < total else []
+    return jsonify({"lines": new_lines, "total": total})
+
 
 
 @app.route("/last-summary")
@@ -1507,7 +1742,7 @@ def set_auto_settings():
     data = request.get_json()
     settings = {
         "enabled": data.get("enabled", False),
-        "interval_hours": data.get("interval_hours", 6),
+        "interval_hours": float(data.get("interval_hours", 6)),
         "webhook_url": data.get("webhook_url", ""),
     }
     _save_auto_settings(settings)
@@ -1562,6 +1797,13 @@ def delete_forum_account(domain):
     if mgr.delete_account(domain):
         return jsonify({"status": "deleted"})
     return jsonify({"error": "not found"}), 404
+
+
+@app.route("/forum/login-walls")
+def list_login_walls():
+    """return all detected login-wall URLs with auth status"""
+    from scrape import get_login_walls
+    return jsonify(get_login_walls())
 
 
 if __name__ == "__main__":

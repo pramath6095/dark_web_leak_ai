@@ -18,7 +18,7 @@ PROVIDERS = ["gemini", "anthropic", "deepseek", "groq", "mistral", "ollama"]
 STAGES = ["refine", "filter", "classify", "summary", "file_analysis"]
 
 # active provider — set from env or overridden by dashboard
-_active_provider = os.getenv("AI_PROVIDER", "gemini").strip().lower()
+_active_provider = os.getenv("AI_PROVIDER", "ollama").strip().lower()
 
 # provider key env var prefixes
 _PROVIDER_PREFIX = {
