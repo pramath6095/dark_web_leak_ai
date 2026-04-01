@@ -237,11 +237,41 @@ def _check_abort(job_id: str) -> bool:
         return _jobs.get(job_id, {}).get("abort", False)
 
 
+class _TeeWriter:
+    """Wraps sys.stdout to tee all write() calls into a job's log buffer."""
+    def __init__(self, original, job_id):
+        self._original = original
+        self._job_id = job_id
+        self._line_buf = ""
+
+    def write(self, data):
+        self._original.write(data)
+        if not data:
+            return
+        # buffer partial lines, flush on newline
+        self._line_buf += data
+        while "\n" in self._line_buf:
+            line, self._line_buf = self._line_buf.split("\n", 1)
+            line = line.rstrip("\r")
+            if line:
+                with _job_lock:
+                    job = _jobs.get(self._job_id)
+                    if job is not None:
+                        job.setdefault("logs", []).append(line)
+                        if len(job["logs"]) > 500:
+                            job["logs"] = job["logs"][-500:]
+
+    def flush(self):
+        self._original.flush()
+
+    def __getattr__(self, name):
+        return getattr(self._original, name)
+
+
 def _run_pipeline(job_id: str, query: str, config: dict):
     """run the main pipeline in a background thread."""
     import io
     import sys
-    import builtins
     from contextlib import redirect_stdout
 
     with _job_lock:
@@ -251,21 +281,9 @@ def _run_pipeline(job_id: str, query: str, config: dict):
 
     output_buffer = io.StringIO()
 
-    # capture print() calls into the job's log buffer
-    _original_print = builtins.print
-    def _capturing_print(*args, **kwargs):
-        msg = " ".join(str(a) for a in args)
-        with _job_lock:
-            job = _jobs.get(job_id)
-            if job is not None:
-                job.setdefault("logs", []).append(msg)
-                # keep last 200 lines
-                if len(job["logs"]) > 200:
-                    job["logs"] = job["logs"][-200:]
-        kwargs.setdefault("flush", True)
-        _original_print(*args, **kwargs)
-
-    builtins.print = _capturing_print
+    # intercept sys.stdout to capture ALL print output into the job log
+    _original_stdout = sys.stdout
+    sys.stdout = _TeeWriter(_original_stdout, job_id)
 
     try:
         from search import search_dark_web, save_results, get_urls_from_results
@@ -420,9 +438,9 @@ def _run_pipeline(job_id: str, query: str, config: dict):
             _jobs[job_id]["error"] = str(e)[:200]
 
     finally:
-        # restore original print
-        import builtins as _bi
-        _bi.print = _original_print
+        # restore original stdout
+        import sys as _sys
+        _sys.stdout = _original_stdout
 
 
 # ============================================================
