@@ -628,17 +628,82 @@ def format_file_analysis(results: dict, verdicts: dict = None) -> str:
     lines.append("|---|---|---|---|---|")
 
     for i, (url, analysis) in enumerate(results.items(), 1):
-        if not isinstance(analysis, dict):
-            continue
-        atype = analysis.get('type', analysis.get('file_type', 'unknown'))
-        ext = analysis.get('extension', '')
-        link_text = analysis.get('link_text', '')
-        label = link_text[:40] if link_text else (ext if ext else atype)
-
-        size_val = analysis.get('size_bytes') or analysis.get('total_size') or 0
-        size_str = _format_size(size_val) if size_val else '—'
-
-        verdict_str = '—'
+        lines.append(f"\n{'─' * 60}")
+        lines.append(f"[{i}] {url}")
+        lines.append(f"{'─' * 60}")
+        
+        if isinstance(analysis, dict):
+            atype = analysis.get('type', analysis.get('file_type', 'unknown'))
+            lines.append(f"  Type: {atype}")
+            
+            if analysis.get('extension'):
+                lines.append(f"  Extension: {analysis['extension']}")
+            
+            if analysis.get('link_text'):
+                lines.append(f"  Link Text: {analysis['link_text']}")
+            
+            if analysis.get('threat_by_type'):
+                lines.append(f"  !! THREAT BY FILE TYPE -- inherently suspicious on dark web")
+            
+            # inline threat data (marketplace listings, paste dumps)
+            if 'inline_data' in analysis:
+                idata = analysis['inline_data']
+                lines.append(f"  ** INLINE THREAT DATA DETECTED ({idata['keyword_hits']} threat keyword hits)")
+                if idata.get('is_marketplace'):
+                    lines.append(f"  ** This is a MARKETPLACE listing")
+                if idata.get('data_sizes'):
+                    lines.append(f"  Data sizes mentioned: {', '.join(idata['data_sizes'][:8])}")
+                if idata.get('price_indicators'):
+                    lines.append(f"  Prices listed: {', '.join(idata['price_indicators'])}")
+                if idata.get('unique_keywords'):
+                    lines.append(f"  Threat keywords: {', '.join(idata['unique_keywords'][:10])}")
+            
+            if 'size_bytes' in analysis and analysis['size_bytes']:
+                size = analysis['size_bytes']
+                if size > 1024 * 1024:
+                    lines.append(f"  Size: {size / (1024*1024):.1f} MB")
+                elif size > 1024:
+                    lines.append(f"  Size: {size / 1024:.1f} KB")
+                else:
+                    lines.append(f"  Size: {size} bytes")
+            
+            if 'total_size' in analysis:
+                size = analysis['total_size']
+                if size > 1024 * 1024:
+                    lines.append(f"  Total Size: {size / (1024*1024):.1f} MB")
+                elif size > 1024:
+                    lines.append(f"  Total Size: {size / 1024:.1f} KB")
+            
+            if 'files' in analysis and analysis['files']:
+                lines.append(f"  Files in archive/torrent ({len(analysis['files'])}):")
+                for f in analysis['files'][:10]:
+                    fsize = f.get('size', 0)
+                    if fsize > 1024 * 1024:
+                        size_str = f"{fsize / (1024*1024):.1f} MB"
+                    elif fsize > 1024:
+                        size_str = f"{fsize / 1024:.1f} KB"
+                    else:
+                        size_str = f"{fsize} bytes"
+                    lines.append(f"    • {f['path']} ({size_str})")
+                if len(analysis['files']) > 10:
+                    lines.append(f"    ... and {len(analysis['files']) - 10} more")
+            
+            if 'header_preview' in analysis and analysis['header_preview']:
+                preview = analysis['header_preview'][:500]
+                lines.append(f"  Header Preview:")
+                for line in preview.split('\n')[:10]:
+                    lines.append(f"    | {line}")
+            
+            if 'name' in analysis:
+                lines.append(f"  Name: {analysis['name']}")
+            
+            if 'info_hash' in analysis and analysis['info_hash']:
+                lines.append(f"  Info Hash: {analysis['info_hash']}")
+            
+            if 'error' in analysis:
+                lines.append(f"  Error: {analysis['error']}")
+        
+        # add verdict if available
         if verdicts and url in verdicts:
             v = verdicts[url]
             vd = v.get('verdict', 'unknown').replace('_', ' ').title()

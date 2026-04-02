@@ -33,13 +33,29 @@ _auto_lock = threading.Lock()
 
 def _load_auto_settings():
     """load automation settings from disk"""
+    defaults = {
+        "enabled": False, "interval_hours": 6, "webhook_url": "",
+        "query": "", "next_run_ts": None,
+        "config": {
+            "use_ai": True, "ai_provider": "ollama", "ollama_model": "",
+            "num_engines": MAX_ENGINES, "scrape_limit": 10,
+            "threads": 3, "depth": 1, "max_pages": 1,
+        },
+    }
     if os.path.isfile(_AUTO_SETTINGS_FILE):
         try:
             with open(_AUTO_SETTINGS_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
+                saved = json.load(f)
+            # merge saved values into defaults so new keys are always present
+            for k, v in saved.items():
+                if k == "config" and isinstance(v, dict):
+                    defaults["config"].update(v)
+                else:
+                    defaults[k] = v
+            return defaults
         except (json.JSONDecodeError, ValueError):
             pass
-    return {"enabled": False, "interval_hours": 6.0, "webhook_url": ""}
+    return defaults
 
 
 def _save_auto_settings(settings):
@@ -70,11 +86,23 @@ def _save_alerts(alerts):
 def _add_alert(severity, title, evidence="", category=""):
     """append a new alert to the alerts history"""
     alerts = _load_alerts()
+    
+    evidence_str = evidence if evidence else ""
+    
+    # prevent consecutive identical alerts (especially for "clear" heartbeats)
+    if alerts:
+        last = alerts[0]
+        if last.get("severity") == severity and last.get("title") == title and last.get("evidence") == evidence_str:
+            # update timestamp to show the latest check, but don't duplicate
+            alerts[0]["timestamp"] = datetime.now().strftime("%b %d, %I:%M %p")
+            _save_alerts(alerts)
+            return alerts
+
     entry = {
         "timestamp": datetime.now().strftime("%b %d, %I:%M %p"),
         "severity": severity,
         "title": title,
-        "evidence": evidence[:500] if evidence else "",
+        "evidence": evidence_str,
     }
     if category:
         entry["category"] = category
@@ -159,7 +187,8 @@ def _generate_alerts_from_classifications(query, classifications, company_catego
 
 
 def _schedule_next_run():
-    """schedule the next automated pipeline run based on saved settings"""
+    """schedule the next automated pipeline run based on saved settings.
+    Persists the real next_run_ts to disk so it survives page refreshes."""
     global _auto_timer
     with _auto_lock:
         # cancel any existing timer
@@ -169,61 +198,65 @@ def _schedule_next_run():
 
         settings = _load_auto_settings()
         if not settings.get("enabled"):
+            # clear deadline from disk
+            settings["next_run_ts"] = None
+            _save_auto_settings(settings)
             return
 
         interval_secs = settings.get("interval_hours", 6) * 3600
+        deadline = time.time() + interval_secs
+
+        # persist the real deadline so the frontend can read it on refresh
+        settings["next_run_ts"] = deadline
+        _save_auto_settings(settings)
+
         _auto_timer = threading.Timer(interval_secs, _auto_run)
         _auto_timer.daemon = True
         _auto_timer.start()
-        print(f"[AUTOMATION] Next run scheduled in {settings.get('interval_hours', 6)}h")
+        hrs = settings.get('interval_hours', 6)
+        print(f"[AUTOMATION] Next run scheduled in {hrs}h (at {datetime.fromtimestamp(deadline).strftime('%H:%M:%S')})")
 
 
 def _auto_run():
-    """execute one automated pipeline run and generate alerts"""
+    """execute one automated pipeline run and generate alerts.
+    Reads query + config from persisted automation_settings.json."""
     settings = _load_auto_settings()
     if not settings.get("enabled"):
         return
 
-    # use the last query from the most recent job, or a default
-    last_query = ""
-    with _job_lock:
-        for jid in sorted(_jobs.keys(), reverse=True):
-            last_query = _jobs[jid].get("query", "")
-            if last_query:
-                break
-
-    if not last_query:
-        _add_alert("info", "Automation skipped", "No query configured. Run a manual pipeline first.")
+    query = settings.get("query", "").strip()
+    if not query:
+        _add_alert("info", "Automation skipped", "No query configured. Set a query in Automation Settings.")
         _schedule_next_run()
         return
 
-    print(f"[AUTOMATION] Starting automated run for: {last_query}")
+    print(f"[AUTOMATION] Starting automated run for: {query}")
 
-    job_id = f"auto_{int(time.time())}_{os.getpid()}"
+    # use the persisted config, falling back to sensible defaults
+    saved_config = settings.get("config", {})
     config = {
-        "use_ai": True,
-        "ai_provider": "ollama",
-        "ollama_model": "",
-        "num_engines": MAX_ENGINES,
-        "scrape_limit": 10,
-        "threads": 3,
-        "depth": 1,
-        "max_pages": 1,
+        "use_ai":       saved_config.get("use_ai", True),
+        "ai_provider":  saved_config.get("ai_provider", "ollama"),
+        "ollama_model": saved_config.get("ollama_model", ""),
+        "num_engines":  saved_config.get("num_engines", MAX_ENGINES),
+        "scrape_limit": saved_config.get("scrape_limit", 10),
+        "threads":      saved_config.get("threads", 3),
+        "depth":        saved_config.get("depth", 1),
+        "max_pages":    saved_config.get("max_pages", 1),
     }
 
+    job_id = f"auto_{int(time.time())}_{os.getpid()}"
     with _job_lock:
         _jobs[job_id] = {
             "status": "queued",
-            "query": last_query,
+            "query": query,
             "config": config,
             "created": time.time(),
             "automated": True,
         }
 
     try:
-        _run_pipeline(job_id, last_query, config)
-        # alerts are now generated inside _run_pipeline via _generate_alerts_from_classifications
-
+        _run_pipeline(job_id, query, config)
     except Exception as e:
         _add_alert("medium", "Automated run failed", str(e)[:300])
 
@@ -643,7 +676,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .markdown-body code { background: rgba(0,0,0,0.3); padding: 2px 6px; border-radius: 4px; font-family: var(--mono); font-size: 12.5px; }
   .markdown-body pre { background: rgba(0,0,0,0.5); padding: 16px; border-radius: 8px; overflow-x: auto; margin-bottom: 16px; border: 1px solid var(--border); }
   .markdown-body pre code { background: none; padding: 0; border: none; }
-  .markdown-body table { width: 100%; border-collapse: collapse; margin-bottom: 16px; overflow-x: auto; table-layout: fixed; }
+  .markdown-body table { width: 100%; border-collapse: collapse; margin-bottom: 16px; overflow-x: auto; table-layout: auto; }
   .markdown-body th, .markdown-body td { border: 1px solid var(--border); padding: 10px 14px; text-align: left; white-space: normal; word-break: break-word; }
   .markdown-body th { background: rgba(255,255,255,0.05); color: white; font-weight: 600; position: sticky; top: 0; z-index: 1; }
   .markdown-body tr:nth-child(even) { background: rgba(255,255,255,0.02); }
@@ -659,10 +692,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     border: 1px solid var(--border); border-radius: 10px;
     margin-bottom: 4px; background: rgba(0,0,0,0.15);
   }
-  .ioc-scroll table { margin-bottom: 0; width: 100%; table-layout: fixed; }
+  .ioc-scroll table { margin-bottom: 0; width: 100%; table-layout: auto; }
   .ioc-scroll thead th:not(:empty) ~ * { } /* keep non-empty headers */
   .ioc-scroll thead { visibility: collapse; }
-  .ioc-scroll td { overflow: hidden; text-overflow: ellipsis; }
+  .ioc-scroll td { overflow: visible; text-overflow: clip; white-space: normal; word-break: break-all; }
   .ioc-scroll::-webkit-scrollbar { width: 5px; }
   .ioc-scroll::-webkit-scrollbar-track { background: transparent; }
   .ioc-scroll::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 5px; }
@@ -729,7 +762,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .evidence-box {
     background: rgba(0,0,0,0.3); border-left: 2px solid var(--danger); padding: 8px 12px;
     border-radius: 4px; font-family: var(--mono); font-size: 11px; color: #f87171;
-    margin-top: 8px; max-height: 80px; overflow-y: auto; white-space: pre-wrap; line-height: 1.5;
+    margin-top: 8px; max-height: none; overflow-y: visible; white-space: normal; word-break: break-all; line-height: 1.5;
   }
   .evidence-box.warning { border-left-color: var(--warning); color: #fbbf24; }
   .cat-tag {
@@ -844,20 +877,20 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       <label>Search Query</label>
       <input type="text" id="query" placeholder="e.g. company data breach, leaked credentials…" required>
       <div class="row">
-        <div><label>Engines</label><input type="number" id="engines" value="__MAX_ENGINES__" min="1" max="__MAX_ENGINES__"></div>
-        <div><label>Scrape Limit</label><input type="number" id="limit" value="10" min="1" max="50"></div>
-        <div><label>Threads</label><input type="number" id="threads" value="3" min="1" max="10"></div>
+        <div><label>Engines</label><input type="number" id="engines" value="__MAX_ENGINES__" min="1"></div>
+        <div><label>Scrape Limit</label><input type="number" id="limit" value="10" min="1"></div>
+        <div><label>Threads</label><input type="number" id="threads" value="3" min="1"></div>
       </div>
       <div class="row">
         <div><label>Depth</label><select id="depth"><option value="1">1 — landing page</option><option value="2">2 — follow sublinks</option></select></div>
-        <div><label>Pages / URL</label><input type="number" id="pages" value="1" min="1" max="10"></div>
+        <div><label>Pages / URL</label><input type="number" id="pages" value="1" min="1"></div>
         <div><label>AI Pipeline</label><select id="ai"><option value="1">Enabled</option><option value="0">Disabled</option></select></div>
       </div>
       <div class="row">
         <div>
           <label>AI Provider</label>
           <select id="provider" onchange="onProviderChange()">
-            <option value="ollama" selected>Ollama (Local)</option>
+            <option value="ollama" selected>Ollama (Local/Default)</option>
             <option value="gemini">Gemini</option>
             <option value="anthropic">Anthropic</option>
             <option value="deepseek">DeepSeek</option>
@@ -895,8 +928,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           <span class="slider-toggle"></span>
         </label>
       </div>
+      <label>Automation Query</label>
+      <input type="text" id="auto-query" placeholder="Query to run on schedule…" style="margin-bottom:16px">
       <label>Monitor Interval (Hours)</label>
-      <input type="number" id="auto-interval" value="6" min="0.1" max="168" step="0.5" style="margin-bottom:16px" placeholder="e.g. 0.5, 1, 6, 24">
+      <input type="number" id="auto-interval" value="6" min="0.01" step="any" required style="margin-bottom:16px">
       <label>Webhook URL (Discord/Slack)</label>
       <input type="text" id="auto-webhook" placeholder="https://..." style="margin-bottom:16px">
       <div style="flex:1"></div>
@@ -1056,7 +1091,10 @@ form.addEventListener('submit', async (e) => {
   renderJobRunning('queued', null);
   setButtonAbort();
   pollInterval = setInterval(() => pollJob(data.job_id), 2000);
-  logPollInterval = setInterval(() => pollLogs(data.job_id), 1500);
+
+  // auto-populate automation query field with the latest manual query
+  const autoQueryEl = document.getElementById('auto-query');
+  if (autoQueryEl && body.query) autoQueryEl.value = body.query;
 });
 
 async function pollJob(jobId) {
@@ -1299,56 +1337,9 @@ async function loadOllamaModels() {
   }
 }
 
-// ── Live log polling ─────────────────────────────────────
-async function pollLogs(jobId, isFinal) {
-  try {
-    const res = await fetch('/logs/' + jobId + '?after=' + logLineCount);
-    const data = await res.json();
-    if (data.lines && data.lines.length) {
-      const panel = document.getElementById('live-log');
-      if (!panel) return;
-      data.lines.forEach(line => {
-        const div = document.createElement('div');
-        div.className = 'log-line ' + classifyLogLine(line);
-        div.textContent = line;
-        panel.appendChild(div);
-      });
-      logLineCount = data.total;
-      panel.scrollTop = panel.scrollHeight;
-    }
-    if (isFinal) {
-      const panel = document.getElementById('live-log');
-      if (panel) panel.classList.add('done');
-    }
-  } catch(e) {}
-}
-
-function classifyLogLine(line) {
-  if (line.includes('[!]') || line.includes('ERROR') || line.includes('failed')) return 'error';
-  if (line.includes('[*]') || line.includes('STEP')) return 'step';
-  if (line.includes('[+]')) return 'info';
-  if (line.includes('WARNING') || line.includes('[WARN]')) return 'warn';
-  return '';
-}
-
-// ── File analysis loader ─────────────────────────────────
-async function loadFileAnalysis() {
-  try {
-    const res = await fetch('/results/file_analysis.txt');
-    if (!res.ok) return;
-    const text = await res.text();
-    if (!text.trim()) return;
-    const section = document.getElementById('file-analysis-section');
-    if (!section) return;
-    section.innerHTML = `
-      <div style="margin-top:16px">
-        <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
-          <div style="width:3px;height:18px;border-radius:2px;background:var(--danger);flex-shrink:0"></div>
-          <h3 style="font-size:13px;font-weight:600;color:var(--text);text-transform:uppercase;letter-spacing:0.04em">File Analysis</h3>
-        </div>
-        <div class="summary-preview markdown-body">${typeof marked !== 'undefined' ? marked.parse(text) : '<pre>' + escHtml(text) + '</pre>'}</div>
-      </div>`;
-  } catch(e) {}
+// Ensure Ollama models load on init if it is the default provider
+if (document.getElementById('provider').value === 'ollama') {
+  loadOllamaModels();
 }
 
 // ── Load persisted summary on page open ─────────────────
@@ -1379,10 +1370,13 @@ async function loadAutoSettings() {
     document.getElementById('auto-enabled').checked = data.enabled || false;
     document.getElementById('auto-interval').value = data.interval_hours || 6;
     document.getElementById('auto-webhook').value = data.webhook_url || '';
+    document.getElementById('auto-query').value = data.query || '';
     updateAutoPill(data.enabled);
     if (data.enabled && data.next_run_ts) {
       autoNextRunTime = data.next_run_ts * 1000;
       startCountdown();
+    } else {
+      document.getElementById('auto-countdown').textContent = '—';
     }
   } catch(e) {}
 }
@@ -1392,6 +1386,7 @@ async function saveAutoSettings() {
     enabled: document.getElementById('auto-enabled').checked,
     interval_hours: parseFloat(document.getElementById('auto-interval').value) || 6,
     webhook_url: document.getElementById('auto-webhook').value,
+    query: document.getElementById('auto-query').value,
   };
   const res = await fetch('/automation/settings', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
   const data = await res.json();
@@ -1426,7 +1421,13 @@ function startCountdown() {
     const el = document.getElementById('auto-countdown');
     if (!autoNextRunTime) { el.textContent = '—'; return; }
     const diff = autoNextRunTime - Date.now();
-    if (diff <= 0) { el.textContent = 'Running now…'; return; }
+    if (diff <= 0) {
+      el.textContent = 'Running now…';
+      // re-sync from server after a short delay (the run has triggered)
+      if (autoCountdownInterval) clearInterval(autoCountdownInterval);
+      setTimeout(() => loadAutoSettings(), 5000);
+      return;
+    }
     const h = Math.floor(diff / 3600000);
     const m = Math.floor((diff % 3600000) / 60000);
     const s = Math.floor((diff % 60000) / 1000);
@@ -1450,7 +1451,7 @@ async function loadAlerts() {
     }
     badge.textContent = alerts.length + ' Total';
     badge.style.display = '';
-    el.innerHTML = alerts.slice(0, 15).map(a => renderAlert(a)).join('');
+    el.innerHTML = alerts.map(a => renderAlert(a)).join('');
   } catch(e) {}
 }
 
@@ -1564,10 +1565,9 @@ loadFiles();
 loadLastSummary();
 loadAutoSettings();
 loadAlerts();
-loadForumAccounts();
-loadLoginWalls();
-// ollama is default, load models on page load
-loadOllamaModels();
+
+// Auto-poll alerts every 30s so they update live
+setInterval(loadAlerts, 30000);
 </script>
 </body>
 </html>"""
@@ -1608,6 +1608,12 @@ def run_pipeline():
             "config":  config,
             "created": time.time(),
         }
+
+    # auto-save query + config so automation can reuse them
+    auto_settings = _load_auto_settings()
+    auto_settings["query"] = query
+    auto_settings["config"] = config
+    _save_auto_settings(auto_settings)
 
     thread = threading.Thread(target=_run_pipeline, args=(job_id, query, config), daemon=True)
     thread.start()
@@ -1726,13 +1732,8 @@ def ollama_models():
 
 @app.route("/automation/settings", methods=["GET"])
 def get_auto_settings():
-    """return current automation settings"""
+    """return current automation settings (including persisted next_run_ts)"""
     settings = _load_auto_settings()
-    # compute next run timestamp if automation is active
-    if settings.get("enabled") and _auto_timer is not None:
-        # approximate: current time + remaining interval
-        interval_secs = settings.get("interval_hours", 6) * 3600
-        settings["next_run_ts"] = time.time() + interval_secs
     return jsonify(settings)
 
 
@@ -1740,20 +1741,22 @@ def get_auto_settings():
 def set_auto_settings():
     """save automation settings and reschedule"""
     data = request.get_json()
-    settings = {
-        "enabled": data.get("enabled", False),
-        "interval_hours": float(data.get("interval_hours", 6)),
-        "webhook_url": data.get("webhook_url", ""),
-    }
+    settings = _load_auto_settings()  # load existing to preserve query/config
+    settings["enabled"] = data.get("enabled", False)
+    settings["interval_hours"] = data.get("interval_hours", 6)
+    settings["webhook_url"] = data.get("webhook_url", "")
+    if "query" in data:
+        settings["query"] = data["query"]
+    if "config" in data:
+        settings["config"] = data["config"]
     _save_auto_settings(settings)
 
-    # reschedule
+    # reschedule (this also persists the new next_run_ts)
     _schedule_next_run()
 
-    resp = {"status": "saved"}
-    if settings["enabled"]:
-        resp["next_run_ts"] = time.time() + settings["interval_hours"] * 3600
-    return jsonify(resp)
+    # re-read to get the computed next_run_ts
+    updated = _load_auto_settings()
+    return jsonify({"status": "saved", "next_run_ts": updated.get("next_run_ts")})
 
 
 @app.route("/automation/alerts")

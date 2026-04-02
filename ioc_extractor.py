@@ -603,10 +603,10 @@ def _onion_url_label(url: str) -> str:
             return label.replace("-", " ").replace("_", " ").title()
         host = parsed.hostname or ""
         if host.endswith(".onion") and len(host) > 20:
-            return host[:12] + "….onion"
+            return host
         return host
     except Exception:
-        return url[:40] + "…" if len(url) > 40 else url
+        return url
 
 
 def format_iocs_summary(all_iocs: dict, all_contacts: dict = None, company_categories: dict = None) -> str:
@@ -838,8 +838,8 @@ def format_iocs_summary(all_iocs: dict, all_contacts: dict = None, company_categ
                         ctx = ""
                         if data["contexts"]:
                             best_ctx = min(data["contexts"], key=len)
-                            if len(best_ctx) > 100:
-                                best_ctx = best_ctx[:100] + "..."
+                            if len(best_ctx) > 500:
+                                best_ctx = best_ctx[:500] + "..."
                             ctx = best_ctx.replace("|", "\\|").replace("\n", " ")
                         src_count = f"{len(data['sources'])} page(s)"
                         lines.append(f"| `{val_escaped}` | {ctx} | {src_count} |")
@@ -941,8 +941,8 @@ def format_contacts_summary(all_contacts: dict) -> str:
                 ctx = ""
                 if data["contexts"]:
                     best_ctx = min(data["contexts"], key=len)
-                    if len(best_ctx) > 100:
-                        best_ctx = best_ctx[:100] + "..."
+                    if len(best_ctx) > 500:
+                        best_ctx = best_ctx[:500] + "..."
                     ctx = best_ctx.replace("|", "\\|").replace("\n", " ")
                 src_count = f"{len(data['sources'])} page(s)"
                 lines.append(f"| `{val_escaped}` | {ctx} | {src_count} |")

@@ -566,11 +566,11 @@ def filter_results(query: str, results: list, limit: int) -> list:
     results_text = []
     for i, item in enumerate(results, 1):
         if isinstance(item, dict):
-            title = item.get("title", "Untitled")[:60]
-            url_short = item.get("url", "")[:50]
+            title = item.get("title", "Untitled")
+            url_short = item.get("url", "")
         else:
-            title = str(item)[:60]
-            url_short = str(item)[:50]
+            title = str(item)
+            url_short = str(item)
         results_text.append(f"{i}. [{title}] — {url_short}")
 
     results_block = "\n".join(results_text)
@@ -868,8 +868,8 @@ JSON:
                     entry = {
                         "category": item.get("category", "other"),
                         "severity": item.get("severity", "low"),
-                        "reason": item.get("reason", "")[:60],
-                        "evidence": item.get("evidence", "")[:80],
+                        "reason": item.get("reason", ""),
+                        "evidence": item.get("evidence", ""),
                     }
                     if company_categories:
                         entry["company_relevance"] = company_categories.get(url, "general")
@@ -1082,7 +1082,7 @@ List IOCs extracted from COMPANY-SPECIFIC pages only.
 Prioritize: emails, crypto wallets, credential dumps, onion URLs.
 SKIP domains from breach catalog listings (hundreds of .com domains = catalog noise, not IOCs).
 Max 10 rows. Include context for each IOC explaining its significance.
-"Source" = the full source URL.
+"Source" = the FULL source URL — NEVER truncate or shorten URLs.
 If none, write "No company-specific IOCs found."
 
 </div>
@@ -1118,7 +1118,7 @@ Same rules as above. Max 10 rows.
 
 CRITICAL RULES:
 - NO raw HTML/boilerplate in any output (no "JavaScript is Disabled", no "Menu Log in Register")
-- Every table cell MUST be under 60 characters
+- Non-URL table cells should be under 60 characters, but URL and Source columns MUST contain the FULL, COMPLETE URL — NEVER truncate, shorten, or add "..." to any URL
 - Be analytical — identify PATTERNS across sources, don't just list what each page says
 - You MUST complete ALL sections above — do not stop early or skip sections
 - Aim for 4000-5000 characters total — be thorough but avoid padding or repetition
@@ -1152,7 +1152,7 @@ def verify_threat_files(query: str, file_analysis: dict) -> dict:
         if not isinstance(analysis, dict):
             continue
 
-        entry_lines = [f"[{i}] URL: {url[:80]}"]
+        entry_lines = [f"[{i}] URL: {url}"]
 
         ftype = analysis.get('file_type', analysis.get('type', 'unknown'))
         entry_lines.append(f"  File Type: {ftype}")
@@ -1208,11 +1208,10 @@ Output ONLY valid JSON array, no markdown, no explanation:
 
 JSON:"""
 
-    # build reverse lookup: truncated url -> full url (AI may return truncated)
+    # build reverse lookup: full url for reference
     url_map = {}
     for url_full in file_analysis:
         url_map[url_full] = url_full
-        url_map[url_full[:80]] = url_full
 
     parsed = _call_llm_json_retry(prompt, "file_analysis")
     if parsed:
