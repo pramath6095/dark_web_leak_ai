@@ -149,7 +149,7 @@ async def check_url_alive(url: str, stream_id: int) -> bool:
         return True  # if HEAD fails just try GET anyway
 
 
-async def scrape_url(url: str, stream_id: int) -> tuple:
+async def scrape_url(url: str, stream_id: int, target_query: str = "") -> tuple:
     print(f"  [*] Checking: {url[:45]}... (circuit {stream_id})")
     is_alive = await check_url_alive(url, stream_id)
     
@@ -172,7 +172,7 @@ async def scrape_url(url: str, stream_id: int) -> tuple:
                     # --- LOGIN WALL DETECTION ---
                     if is_login_wall(html):
                         print(f"  [AUTH] Login wall detected on {url[:45]}...")
-                        auth_html = await _try_authenticated_scrape(url, stream_id, html)
+                        auth_html = await _try_authenticated_scrape(url, stream_id, html, target_query=target_query)
                         if auth_html:
                             html = auth_html
                             print(f"  [AUTH] ✓ Got authenticated content for {url[:45]}...")
@@ -205,9 +205,11 @@ async def scrape_url(url: str, stream_id: int) -> tuple:
         return url, sanitize_error(e), [], ''
 
 
-async def _try_authenticated_scrape(url: str, stream_id: int, original_html: str) -> str:
+async def _try_authenticated_scrape(url: str, stream_id: int, original_html: str, target_query: str = "") -> str:
     """
     attempt to authenticate and re-fetch a login-walled page.
+    if target_query is provided and the forum type is known, performs an
+    internal forum search instead of re-fetching the homepage.
     returns the authenticated HTML on success, None on failure.
     """
     forum_session = get_forum_session()
@@ -216,7 +218,19 @@ async def _try_authenticated_scrape(url: str, stream_id: int, original_html: str
         auth_session, success = await forum_session.get_authenticated_session(url, stream_id + 1000)
         
         if success:
-            # re-fetch the page with authenticated session
+            # detect forum type for potential internal search
+            forum_type = forum_session.detect_forum_type(original_html)
+
+            # try internal forum search if we have a query and known forum type
+            if target_query and forum_type != "generic":
+                search_html = await forum_session.search_forum(auth_session, url, target_query, forum_type)
+                if search_html and not is_login_wall(search_html):
+                    print(f"  [AUTH] Forum search returned results for {url[:45]}...")
+                    return search_html
+                else:
+                    print(f"  [AUTH] Forum search failed or still walled, falling back to page re-fetch")
+
+            # fallback: re-fetch the page with authenticated session
             headers = get_browser_headers()
             try:
                 async with auth_session.get(url, headers=headers) as resp:
@@ -238,7 +252,7 @@ async def _try_authenticated_scrape(url: str, stream_id: int, original_html: str
         return None
 
 
-async def scrape_url_paginated(url: str, stream_id: int, max_pages: int = 1) -> tuple:
+async def scrape_url_paginated(url: str, stream_id: int, max_pages: int = 1, target_query: str = "") -> tuple:
     """scrape a URL and follow pagination links up to max_pages."""
     all_text = ""
     all_sublinks = []
@@ -251,7 +265,7 @@ async def scrape_url_paginated(url: str, stream_id: int, max_pages: int = 1) -> 
             break
         visited_pages.add(current_url)
         
-        result_url, text, sublinks, html = await scrape_url(current_url, stream_id + page_num)
+        result_url, text, sublinks, html = await scrape_url(current_url, stream_id + page_num, target_query=target_query)
         
         if text.startswith("[ERROR"):
             if page_num == 0:
@@ -388,7 +402,7 @@ def load_urls(filename: str = "output/results.txt") -> list:
         return []
 
 
-async def scrape_all_async(urls: list, max_workers: int = 3, depth: int = 1, max_pages: int = 1, check_abort: callable = None) -> tuple:
+async def scrape_all_async(urls: list, max_workers: int = 3, depth: int = 1, max_pages: int = 1, check_abort: callable = None, target_query: str = "") -> tuple:
     """
     scrape urls with optional depth control and pagination.
     depth=1: landing page only (default, backward compatible)
@@ -422,7 +436,7 @@ async def scrape_all_async(urls: list, max_workers: int = 3, depth: int = 1, max
             if check_abort and check_abort():
                 raise InterruptedError("Aborted by user")
             # pass check_abort down if possible, but scrape_url_paginated isn't wired for it so we just check at task level
-            return await scrape_url_paginated(url, stream_id, max_pages=max_pages)
+            return await scrape_url_paginated(url, stream_id, max_pages=max_pages, target_query=target_query)
     
     # depth 1: scrape initial urls
     tasks = []
@@ -490,9 +504,9 @@ async def scrape_all_async(urls: list, max_workers: int = 3, depth: int = 1, max
     return results, html_cache
 
 
-def scrape_all(urls: list, max_workers: int = 3, depth: int = 1, max_pages: int = 1, check_abort: callable = None) -> tuple:
+def scrape_all(urls: list, max_workers: int = 3, depth: int = 1, max_pages: int = 1, check_abort: callable = None, target_query: str = "") -> tuple:
     """returns (scraped_data, html_cache) tuple"""
-    return asyncio.run(scrape_all_async(urls, max_workers, depth, max_pages=max_pages, check_abort=check_abort))
+    return asyncio.run(scrape_all_async(urls, max_workers, depth, max_pages=max_pages, check_abort=check_abort, target_query=target_query))
 
 
 def save_scraped_data(results: dict, filename: str = "output/scraped_data.txt"):

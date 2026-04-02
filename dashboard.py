@@ -328,7 +328,7 @@ def _run_pipeline(job_id: str, query: str, config: dict):
         with _job_lock:
             _jobs[job_id]["progress"] = "scraping"
 
-        scraped_data, html_cache = scrape_all(urls_to_scrape, max_workers=threads, depth=depth, max_pages=max_pages, check_abort=lambda: _check_abort(job_id))
+        scraped_data, html_cache = scrape_all(urls_to_scrape, max_workers=threads, depth=depth, max_pages=max_pages, check_abort=lambda: _check_abort(job_id), target_query=query)
         save_scraped_data(scraped_data)
 
         if _check_abort(job_id): raise InterruptedError("Aborted")

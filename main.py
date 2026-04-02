@@ -209,7 +209,7 @@ def main():
     urls_to_scrape = urls[:scrape_limit]
     print(f"[*] Scraping first {len(urls_to_scrape)} URLs...")
     
-    scraped_data, html_cache = scrape_all(urls_to_scrape, max_workers=args.threads, depth=args.depth, max_pages=max_pages)
+    scraped_data, html_cache = scrape_all(urls_to_scrape, max_workers=args.threads, depth=args.depth, max_pages=max_pages, target_query=query)
     save_scraped_data(scraped_data)
     
     # stats

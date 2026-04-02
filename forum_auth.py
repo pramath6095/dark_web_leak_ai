@@ -877,6 +877,83 @@ class ForumSession:
             print(f"  [AUTH] Login request failed for {domain}: {str(e)[:60]}")
             return False
 
+    async def search_forum(self, session: ClientSession, url: str, query: str, forum_type: str) -> str:
+        """
+        execute an internal search on a known forum platform.
+        returns the search results HTML on success, None on failure.
+        only works for known forum types (xenforo, phpbb, mybb, smf).
+        """
+        if forum_type == "generic" or not query:
+            return None
+
+        domain = extract_domain(url)
+        parsed = urlparse(url)
+        base = f"{parsed.scheme}://{parsed.netloc}"
+        headers = dict(BROWSER_HEADERS)
+        headers["Referer"] = url
+
+        print(f"  [AUTH] Searching {forum_type} forum on {domain} for \"{query}\"...")
+
+        try:
+            if forum_type == "xenforo":
+                # extract _xfToken from the page
+                async with session.get(url, headers=BROWSER_HEADERS) as resp:
+                    page_html = await resp.text()
+                token_match = re.search(r'name="_xfToken"\s+value="([^"]+)"', page_html)
+                xf_token = token_match.group(1) if token_match else ""
+
+                search_url = f"{base}/search/search"
+                post_data = {
+                    "keywords": query,
+                    "_xfToken": xf_token,
+                    "order": "relevance",
+                }
+                headers["Content-Type"] = "application/x-www-form-urlencoded"
+                async with session.post(search_url, data=post_data, headers=headers, allow_redirects=True) as resp:
+                    if resp.status == 200:
+                        html = await resp.text()
+                        print(f"  [AUTH] XenForo search completed for {domain}")
+                        return html
+
+            elif forum_type == "phpbb":
+                search_url = f"{base}/search.php"
+                params = {"keywords": query, "fid[]": "0", "sr": "topics"}
+                async with session.get(search_url, params=params, headers=headers, allow_redirects=True) as resp:
+                    if resp.status == 200:
+                        html = await resp.text()
+                        print(f"  [AUTH] phpBB search completed for {domain}")
+                        return html
+
+            elif forum_type == "mybb":
+                search_url = f"{base}/search.php"
+                post_data = {
+                    "action": "do_search",
+                    "keywords": query,
+                    "postthread": "1",
+                    "sortby": "relevance",
+                    "sortordr": "desc",
+                }
+                headers["Content-Type"] = "application/x-www-form-urlencoded"
+                async with session.post(search_url, data=post_data, headers=headers, allow_redirects=True) as resp:
+                    if resp.status == 200:
+                        html = await resp.text()
+                        print(f"  [AUTH] MyBB search completed for {domain}")
+                        return html
+
+            elif forum_type == "smf":
+                search_url = f"{base}/index.php"
+                params = {"action": "search2", "search": query}
+                async with session.get(search_url, params=params, headers=headers, allow_redirects=True) as resp:
+                    if resp.status == 200:
+                        html = await resp.text()
+                        print(f"  [AUTH] SMF search completed for {domain}")
+                        return html
+
+        except Exception as e:
+            print(f"  [AUTH] Forum search failed on {domain}: {str(e)[:80]}")
+
+        return None
+
     async def register(self, session: ClientSession, url: str, html: str = None) -> dict:
         """
         attempt to register a new account on a forum.
