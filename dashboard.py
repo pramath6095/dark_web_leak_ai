@@ -267,6 +267,18 @@ def _run_pipeline(job_id: str, query: str, config: dict):
 
     builtins.print = _capturing_print
 
+    # also patch module-level print in modules that shadow builtins.print
+    # with functools.partial (so their logs appear in the dashboard)
+    import scrape as _scrape_mod
+    import search as _search_mod
+    import forum_auth as _forum_mod
+    _orig_scrape_print = _scrape_mod.print
+    _orig_search_print = _search_mod.print
+    _orig_forum_print = _forum_mod.print
+    _scrape_mod.print = _capturing_print
+    _search_mod.print = _capturing_print
+    _forum_mod.print = _capturing_print
+
     try:
         from search import search_dark_web, save_results, get_urls_from_results
         from scrape import scrape_all, save_scraped_data
@@ -291,6 +303,7 @@ def _run_pipeline(job_id: str, query: str, config: dict):
 
         with _job_lock:
             _jobs[job_id]["progress"] = "searching"
+            _jobs[job_id].setdefault("stage_times", {})["searching"] = time.time()
 
         search_queries = [query]
         if use_ai:
@@ -315,6 +328,7 @@ def _run_pipeline(job_id: str, query: str, config: dict):
 
         with _job_lock:
             _jobs[job_id]["progress"] = "filtering"
+            _jobs[job_id].setdefault("stage_times", {})["filtering"] = time.time()
 
         if use_ai and len(all_results) > scrape_limit:
             from ai_engine import filter_results
@@ -327,6 +341,7 @@ def _run_pipeline(job_id: str, query: str, config: dict):
 
         with _job_lock:
             _jobs[job_id]["progress"] = "scraping"
+            _jobs[job_id].setdefault("stage_times", {})["scraping"] = time.time()
 
         scraped_data, html_cache = scrape_all(urls_to_scrape, max_workers=threads, depth=depth, max_pages=max_pages, check_abort=lambda: _check_abort(job_id), target_query=query)
         save_scraped_data(scraped_data)
@@ -343,6 +358,7 @@ def _run_pipeline(job_id: str, query: str, config: dict):
 
             with _job_lock:
                 _jobs[job_id]["progress"] = "categorizing"
+                _jobs[job_id].setdefault("stage_times", {})["categorizing"] = time.time()
 
             from ai_engine import categorize_company_relevance, classify_threats, generate_summary
             company_categories = categorize_company_relevance(query, scraped_data)
@@ -351,6 +367,7 @@ def _run_pipeline(job_id: str, query: str, config: dict):
 
             with _job_lock:
                 _jobs[job_id]["progress"] = "classifying"
+                _jobs[job_id].setdefault("stage_times", {})["classifying"] = time.time()
 
             classifications = classify_threats(query, scraped_data, company_categories=company_categories)
 
@@ -362,6 +379,7 @@ def _run_pipeline(job_id: str, query: str, config: dict):
             # file analysis + AI verification
             with _job_lock:
                 _jobs[job_id]["progress"] = "analyzing_files"
+                _jobs[job_id].setdefault("stage_times", {})["analyzing_files"] = time.time()
 
             try:
                 from file_analyzer import analyze_threat_files, format_file_analysis
@@ -387,6 +405,7 @@ def _run_pipeline(job_id: str, query: str, config: dict):
 
             with _job_lock:
                 _jobs[job_id]["progress"] = "summarizing"
+                _jobs[job_id].setdefault("stage_times", {})["summarizing"] = time.time()
 
             summary = generate_summary(query, scraped_data, classifications, regex_iocs=all_iocs, actor_contacts=all_contacts, company_categories=company_categories)
 
@@ -420,9 +439,12 @@ def _run_pipeline(job_id: str, query: str, config: dict):
             _jobs[job_id]["error"] = str(e)[:200]
 
     finally:
-        # restore original print
+        # restore original print for all patched modules
         import builtins as _bi
         _bi.print = _original_print
+        _scrape_mod.print = _orig_scrape_print
+        _search_mod.print = _orig_search_print
+        _forum_mod.print = _orig_forum_print
 
 
 # ============================================================
@@ -528,6 +550,48 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .dot.pulse { animation: pulse 1.2s ease-in-out infinite; }
   @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.3; } }
 
+  /* PIPELINE TIMER & ERROR COUNTER */
+  .pipeline-stats-row {
+    display: flex; gap: 14px; margin-bottom: 14px; flex-wrap: wrap;
+  }
+  .pipeline-stat-widget {
+    background: var(--surface2); border: 1px solid var(--border); border-radius: 10px;
+    padding: 14px 20px; display: flex; align-items: center; gap: 14px;
+    min-width: 200px; flex: 1;
+  }
+  .pipeline-stat-widget .stat-icon {
+    width: 40px; height: 40px; border-radius: 10px; display: flex;
+    align-items: center; justify-content: center; font-size: 18px; flex-shrink: 0;
+  }
+  .pipeline-stat-widget .stat-icon.timer-icon {
+    background: rgba(34,211,238,0.12); color: var(--accent);
+  }
+  .pipeline-stat-widget .stat-icon.error-icon {
+    background: rgba(239,68,68,0.12); color: var(--danger);
+  }
+  .pipeline-stat-widget .stat-label {
+    color: var(--muted); font-size: 11px; text-transform: uppercase;
+    letter-spacing: 0.05em; margin-bottom: 2px;
+  }
+  .pipeline-stat-widget .stat-value {
+    color: var(--text); font-size: 22px; font-weight: 700;
+    font-family: var(--mono); letter-spacing: -0.02em;
+  }
+  .pipeline-stat-widget .stat-value.timer-active {
+    color: var(--accent);
+  }
+  .pipeline-stat-widget .stat-value.has-errors {
+    color: var(--danger);
+  }
+  .error-breakdown {
+    display: flex; gap: 8px; margin-top: 4px; flex-wrap: wrap;
+  }
+  .error-breakdown .err-tag {
+    font-size: 10px; padding: 2px 7px; border-radius: 4px;
+    background: rgba(239,68,68,0.08); color: #f87171;
+    border: 1px solid rgba(239,68,68,0.15);
+  }
+
   /* JOB STATUS */
   #job-status { display: none; }
   .job-meta { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
@@ -536,6 +600,47 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .job-stat .value { color: var(--text); font-size: 18px; font-weight: 700; margin-top: 2px; }
   .progress-step { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; }
   .progress-step.active { color: var(--accent); }
+
+  /* STAGE TIMELINE */
+  .stage-timeline {
+    display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px;
+  }
+  .stage-chip {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 14px; border-radius: 8px; font-size: 12px;
+    background: var(--surface2); border: 1px solid var(--border);
+    transition: all 0.3s ease; min-width: 130px;
+  }
+  .stage-chip.done {
+    border-color: rgba(16,185,129,0.25);
+  }
+  .stage-chip.active {
+    border-color: rgba(34,211,238,0.4);
+    background: rgba(34,211,238,0.06);
+    box-shadow: 0 0 12px rgba(34,211,238,0.08);
+  }
+  .stage-chip.pending {
+    opacity: 0.4;
+  }
+  .stage-chip .stage-dot {
+    width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+  }
+  .stage-chip.done .stage-dot { background: var(--success); }
+  .stage-chip.active .stage-dot { background: var(--accent); animation: pulse 1.2s ease-in-out infinite; }
+  .stage-chip.pending .stage-dot { background: var(--muted); }
+  .stage-chip .stage-name {
+    font-weight: 500; color: var(--text); text-transform: capitalize;
+  }
+  .stage-chip.pending .stage-name { color: var(--muted); }
+  .stage-chip .stage-time {
+    margin-left: auto; font-family: var(--mono); font-size: 11px;
+    color: var(--muted); min-width: 32px; text-align: right;
+  }
+  .stage-chip.active .stage-time { color: var(--accent); }
+  .stage-chip.done .stage-time { color: var(--success); }
+  .stage-chevron {
+    color: var(--border); font-size: 12px; display: flex; align-items: center;
+  }
   .summary-preview { background: var(--surface2); border: 1px solid var(--border); border-radius: 10px; padding: 16px; font-size: 13px; line-height: 1.7; color: #cbd5e1; white-space: normal; max-height: 350px; overflow-y: auto; overflow-x: auto; margin-top: 12px; }
 
   /* LIVE LOG PANEL */
@@ -967,6 +1072,23 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       <div class="h-bar"></div>
       <h2>Job Status</h2>
     </div>
+    <div class="pipeline-stats-row" id="pipeline-stats-row" style="display:none">
+      <div class="pipeline-stat-widget">
+        <div class="stat-icon timer-icon">⏱</div>
+        <div>
+          <div class="stat-label">Pipeline Duration</div>
+          <div class="stat-value" id="pipeline-timer">00:00</div>
+        </div>
+      </div>
+      <div class="pipeline-stat-widget">
+        <div class="stat-icon error-icon">⚠</div>
+        <div>
+          <div class="stat-label">Tor Connection Errors</div>
+          <div class="stat-value" id="error-counter">0</div>
+          <div class="error-breakdown" id="error-breakdown"></div>
+        </div>
+      </div>
+    </div>
     <div id="job-info"></div>
     <div id="job-log-panel"></div>
   </div>
@@ -1007,6 +1129,82 @@ let pollInterval = null;
 let logPollInterval = null;
 let currentJobId = null;
 let logLineCount = 0;
+let lastStageTimes = {};
+
+// ── Pipeline Timer ──
+let timerInterval = null;
+let timerStartTime = null;
+
+// ── Error Counter ──
+let torErrors = { connection: 0, timeout: 0, dead_link: 0, http: 0, other: 0 };
+
+function resetTimer() {
+  if (timerInterval) clearInterval(timerInterval);
+  timerInterval = null;
+  timerStartTime = null;
+  const el = document.getElementById('pipeline-timer');
+  if (el) { el.textContent = '00:00'; el.classList.remove('timer-active'); }
+}
+
+function startTimer() {
+  resetTimer();
+  timerStartTime = Date.now();
+  const el = document.getElementById('pipeline-timer');
+  if (el) el.classList.add('timer-active');
+  timerInterval = setInterval(updateTimerDisplay, 200);
+  updateTimerDisplay();
+}
+
+function stopTimer() {
+  if (timerInterval) clearInterval(timerInterval);
+  timerInterval = null;
+  const el = document.getElementById('pipeline-timer');
+  if (el) el.classList.remove('timer-active');
+  updateTimerDisplay();
+}
+
+function updateTimerDisplay() {
+  if (!timerStartTime) return;
+  const elapsed = Date.now() - timerStartTime;
+  const mins = Math.floor(elapsed / 60000);
+  const secs = Math.floor((elapsed % 60000) / 1000);
+  const el = document.getElementById('pipeline-timer');
+  if (el) el.textContent = `${String(mins).padStart(2,'0')}:${String(secs).padStart(2,'0')}`;
+}
+
+function resetErrorCounter() {
+  torErrors = { connection: 0, timeout: 0, dead_link: 0, http: 0, other: 0 };
+  updateErrorDisplay();
+}
+
+function countErrorsInLine(line) {
+  const lower = line.toLowerCase();
+  // check timeout before connection since 'connection timeout' contains 'connection'
+  if (lower.includes('[error: connection timeout]')) { torErrors.timeout++; updateErrorDisplay(); }
+  else if (lower.includes('[error: connection')) { torErrors.connection++; updateErrorDisplay(); }
+  else if (lower.includes('[error: dead link]')) { torErrors.dead_link++; updateErrorDisplay(); }
+  else if (lower.includes('[error: http')) { torErrors.http++; updateErrorDisplay(); }
+  else if (lower.includes('[error: request failed]')) { torErrors.other++; updateErrorDisplay(); }
+}
+
+function updateErrorDisplay() {
+  const total = torErrors.connection + torErrors.timeout + torErrors.dead_link + torErrors.http + torErrors.other;
+  const el = document.getElementById('error-counter');
+  if (el) {
+    el.textContent = total;
+    el.className = 'stat-value' + (total > 0 ? ' has-errors' : '');
+  }
+  const bd = document.getElementById('error-breakdown');
+  if (bd) {
+    let tags = [];
+    if (torErrors.connection) tags.push(`<span class="err-tag">Connect: ${torErrors.connection}</span>`);
+    if (torErrors.timeout) tags.push(`<span class="err-tag">Timeout: ${torErrors.timeout}</span>`);
+    if (torErrors.dead_link) tags.push(`<span class="err-tag">Dead: ${torErrors.dead_link}</span>`);
+    if (torErrors.http) tags.push(`<span class="err-tag">HTTP: ${torErrors.http}</span>`);
+    if (torErrors.other) tags.push(`<span class="err-tag">Other: ${torErrors.other}</span>`);
+    bd.innerHTML = tags.join('');
+  }
+}
 
 const STEPS = ['searching','filtering','scraping','authenticating','categorizing','classifying','analyzing_files','summarizing'];
 
@@ -1053,7 +1251,12 @@ form.addEventListener('submit', async (e) => {
   statusDiv.style.display = 'block';
   logLineCount = 0;
   document.getElementById('job-log-panel').innerHTML = '<div class="log-panel" id="live-log"></div>';
-  renderJobRunning('queued', null);
+  // Show stats row, start timer, reset error counter
+  document.getElementById('pipeline-stats-row').style.display = '';
+  resetErrorCounter();
+  startTimer();
+  lastStageTimes = {};
+  renderJobRunning('queued', null, {});
   setButtonAbort();
   pollInterval = setInterval(() => pollJob(data.job_id), 2000);
   logPollInterval = setInterval(() => pollLogs(data.job_id), 1500);
@@ -1062,8 +1265,10 @@ form.addEventListener('submit', async (e) => {
 async function pollJob(jobId) {
   const s = await fetch('/status/' + jobId).then(r => r.json());
   if (s.status === 'running' || s.status === 'queued') {
-    renderJobRunning(s.status, s.progress);
+    lastStageTimes = s.stage_times || {};
+    renderJobRunning(s.status, s.progress, s.stage_times || {});
   } else if (s.status === 'done') {
+    stopTimer();
     renderJobDone(s);
     clearInterval(pollInterval);
     clearInterval(logPollInterval);
@@ -1074,6 +1279,7 @@ async function pollJob(jobId) {
     loadAlerts();
     loadLoginWalls();
   } else if (s.status === 'aborted') {
+    stopTimer();
     renderJobAborted();
     clearInterval(pollInterval);
     clearInterval(logPollInterval);
@@ -1084,6 +1290,7 @@ async function pollJob(jobId) {
     loadAlerts();
     loadLoginWalls();
   } else if (s.status === 'error') {
+    stopTimer();
     renderJobError(s.error);
     clearInterval(pollInterval);
     clearInterval(logPollInterval);
@@ -1093,28 +1300,87 @@ async function pollJob(jobId) {
   }
 }
 
-function renderJobRunning(status, progress) {
-  const stepHtml = STEPS.map(s =>
-    `<span class="progress-step ${progress === s ? 'active' : ''}">
-      ${progress === s ? '›' : (STEPS.indexOf(s) < STEPS.indexOf(progress) ? '·' : '·')} ${s}
-    </span>`
-  ).join('<span style="color:var(--border);margin:0 4px">›</span>');
+function renderJobRunning(status, progress, stageTimes) {
+  const activeIdx = STEPS.indexOf(progress);
+  const now = Date.now() / 1000; // current time in seconds (to compare with server timestamps)
+  const chipHtml = STEPS.map((s, i) => {
+    let cls = 'pending';
+    let timeStr = '—';
+    if (i < activeIdx) {
+      cls = 'done';
+      // duration = next stage start - this stage start
+      const nextStage = STEPS[i + 1];
+      const start = stageTimes[s];
+      const end = stageTimes[nextStage];
+      if (start && end) timeStr = formatStageTime(end - start);
+    } else if (i === activeIdx) {
+      cls = 'active';
+      const start = stageTimes[s];
+      if (start) timeStr = formatStageTime(now - start);
+    }
+    const displayName = s.replace(/_/g, ' ');
+    return `<div class="stage-chip ${cls}">
+      <div class="stage-dot"></div>
+      <span class="stage-name">${displayName}</span>
+      <span class="stage-time">${timeStr}</span>
+    </div>`;
+  }).join('<span class="stage-chevron">›</span>');
+
   jobInfo.innerHTML = `
     <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px;">
       <span class="badge badge-running"><span class="dot pulse"></span>${status}</span>
     </div>
-    <div style="display:flex;flex-wrap:wrap;gap:8px;font-size:12px;">${stepHtml}</div>`;
+    <div class="stage-timeline">${chipHtml}</div>`;
+}
+
+function formatStageTime(secs) {
+  if (!secs || secs < 0) return '—';
+  secs = Math.floor(secs);
+  if (secs < 60) return secs + 's';
+  const m = Math.floor(secs / 60);
+  const s = secs % 60;
+  return m + 'm ' + s + 's';
 }
 
 function renderJobDone(s) {
+  // compute final timer display
+  const elapsed = timerStartTime ? Date.now() - timerStartTime : 0;
+  const totalSecs = Math.floor(elapsed / 1000);
+  const mins = Math.floor(totalSecs / 60);
+  const secs = totalSecs % 60;
+  const timerStr = `${String(mins).padStart(2,'0')}:${String(secs).padStart(2,'0')}`;
+  const errTotal = torErrors.connection + torErrors.timeout + torErrors.dead_link + torErrors.http + torErrors.other;
+
+  // build final stage breakdown from stage_times
+  const stageTimes = s.stage_times || lastStageTimes || {};
+  const finishedAt = s.finished || (Date.now() / 1000);
+  const stageBreakdown = STEPS.map((step, i) => {
+    const start = stageTimes[step];
+    if (!start) return null;
+    const nextStage = STEPS[i + 1];
+    const end = stageTimes[nextStage] || finishedAt;
+    const dur = formatStageTime(end - start);
+    const displayName = step.replace(/_/g, ' ');
+    return `<div class="stage-chip done">
+      <div class="stage-dot"></div>
+      <span class="stage-name">${displayName}</span>
+      <span class="stage-time">${dur}</span>
+    </div>`;
+  }).filter(Boolean).join('<span class="stage-chevron">›</span>');
+
   jobInfo.innerHTML = `
     <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px;">
       <span class="badge badge-done"><span class="dot"></span>done</span>
+      <span style="color:var(--muted);font-size:12px">Completed in ${timerStr}</span>
+      ${errTotal > 0 ? `<span style="color:var(--danger);font-size:12px">· ${errTotal} Tor error${errTotal > 1 ? 's' : ''}</span>` : ''}
     </div>
-    <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:${s.summary_preview ? '14px' : '0'}">
+    <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:14px">
       <div class="job-stat"><div class="label">URLs Found</div><div class="value">${s.results_count || 0}</div></div>
       <div class="job-stat"><div class="label">Pages Scraped</div><div class="value">${s.scraped_count || 0}</div></div>
+      <div class="job-stat"><div class="label">Duration</div><div class="value">${timerStr}</div></div>
+      <div class="job-stat"><div class="label">Tor Errors</div><div class="value" style="${errTotal > 0 ? 'color:var(--danger)' : ''}">${errTotal}</div></div>
     </div>
+    ${stageBreakdown ? `<div style="margin-bottom:14px"><div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);margin-bottom:8px">Stage Breakdown</div><div class="stage-timeline">${stageBreakdown}</div></div>` : ''}
     ${s.summary_preview ? `<div class="summary-preview markdown-body">${typeof marked !== 'undefined' ? marked.parse(s.summary_preview) : escHtml(s.summary_preview)}</div>` : ''}
     <div id="file-analysis-section"></div>`;
   // load file analysis below summary
@@ -1312,6 +1578,8 @@ async function pollLogs(jobId, isFinal) {
         div.className = 'log-line ' + classifyLogLine(line);
         div.textContent = line;
         panel.appendChild(div);
+        // count Tor connection errors from log lines
+        countErrorsInLine(line);
       });
       logLineCount = data.total;
       panel.scrollTop = panel.scrollHeight;
