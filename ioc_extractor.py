@@ -542,16 +542,6 @@ def extract_iocs(text: str, source_url: str = "") -> dict:
     return iocs
 
 
-def extract_all(text: str, source_url: str = "") -> dict:
-    """
-    extract both IOCs and threat actor contacts from text.
-    returns dict with 'iocs' and 'contacts' keys
-    """
-    return {
-        "iocs": extract_iocs(text, source_url),
-        "contacts": extract_contacts(text),
-    }
-
 
 def extract_iocs_from_scraped(scraped_data: dict) -> dict:
     """
@@ -847,108 +837,6 @@ def format_iocs_summary(all_iocs: dict, all_contacts: dict = None, company_categ
 
     return "\n".join(lines)
 
-
-
-
-
-
-def format_contacts_summary(all_contacts: dict) -> str:
-    """format extracted threat actor contacts with context into a markdown summary"""
-    if not all_contacts:
-        return "No threat actor contacts extracted."
-
-    lines = []
-    lines.append("## 📬 Threat Actor Contacts (Auto-Extracted)")
-    lines.append("")
-
-    # aggregate across all sources, keeping context
-    aggregated = {}  # contact_type -> {value: {contexts: [], sources: []}}
-    for url, contacts in all_contacts.items():
-        for contact_type, items in contacts.items():
-            if contact_type not in aggregated:
-                aggregated[contact_type] = {}
-            for item in items:
-                val = item["value"] if isinstance(item, dict) else item
-                ctx = item.get("context", "") if isinstance(item, dict) else ""
-                if val not in aggregated[contact_type]:
-                    aggregated[contact_type][val] = {"contexts": [], "sources": []}
-                if ctx and ctx not in aggregated[contact_type][val]["contexts"]:
-                    aggregated[contact_type][val]["contexts"].append(ctx)
-                if url not in aggregated[contact_type][val]["sources"]:
-                    aggregated[contact_type][val]["sources"].append(url)
-
-    labels = {
-        "telegram": "📱 Telegram",
-        "wickr": "💬 Wickr",
-        "signal": "📶 Signal",
-        "session": "🔒 Session",
-        "jabber_xmpp": "💭 Jabber/XMPP",
-        "discord": "🎮 Discord",
-        "matrix": "🔷 Matrix",
-        "keybase": "🔑 Keybase",
-        "whatsapp": "📲 WhatsApp",
-        "element_riot": "🟢 Element/Riot",
-        "threema": "🟩 Threema",
-        "briar": "🌿 Briar",
-        "simplex": "🔐 SimpleX",
-        "tox_id": "☠️ TOX ID",
-        "pgp_fingerprint": "🔏 PGP Fingerprint",
-        "pgp_keyid": "🔏 PGP Key ID",
-        "protonmail": "📧 ProtonMail",
-        "tutanota": "📧 Tutanota/Tuta",
-        "onionmail": "🧅 OnionMail/DNMX",
-        "cock_li": "📧 cock.li",
-        "forum_handle": "👤 Forum Handle",
-        "onion_contact": "🧅 Onion Contact Page",
-        "icq": "💬 ICQ",
-        "skype": "💬 Skype",
-    }
-
-    display_order = [
-        "telegram", "jabber_xmpp", "wickr", "session", "signal", "tox_id",
-        "discord", "matrix", "keybase", "whatsapp", "element_riot",
-        "threema", "briar", "simplex", "icq", "skype",
-        "protonmail", "tutanota", "onionmail", "cock_li",
-        "pgp_fingerprint", "pgp_keyid",
-        "forum_handle", "onion_contact",
-    ]
-
-    # overview table
-    overview_rows = []
-    for contact_type in display_order:
-        if contact_type in aggregated:
-            label = labels.get(contact_type, contact_type)
-            overview_rows.append(f"| {label} | {len(aggregated[contact_type])} |")
-
-    if overview_rows:
-        lines.append("### Overview")
-        lines.append("| Platform | Count |")
-        lines.append("|---|---|")
-        lines.extend(overview_rows)
-        lines.append("")
-
-    for contact_type in display_order:
-        if contact_type in aggregated:
-            label = labels.get(contact_type, contact_type)
-            items = aggregated[contact_type]
-            lines.append(f"### {label} ({len(items)} found)")
-            lines.append("")
-            lines.append("| Contact | Context | Sources |")
-            lines.append("|---|---|---|")
-            for val, data in sorted(items.items()):
-                val_escaped = val.replace("|", "\\|")
-                # pick the shortest non-empty context (most focused)
-                ctx = ""
-                if data["contexts"]:
-                    best_ctx = min(data["contexts"], key=len)
-                    if len(best_ctx) > 100:
-                        best_ctx = best_ctx[:100] + "..."
-                    ctx = best_ctx.replace("|", "\\|").replace("\n", " ")
-                src_count = f"{len(data['sources'])} page(s)"
-                lines.append(f"| `{val_escaped}` | {ctx} | {src_count} |")
-            lines.append("")
-
-    return "\n".join(lines)
 
 
 if __name__ == "__main__":

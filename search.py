@@ -1,89 +1,14 @@
 import os
 import asyncio
-import random
 import re
 from bs4 import BeautifulSoup
 from aiohttp import ClientSession, ClientTimeout
-from aiohttp_socks import ProxyConnector
 
-from dotenv import load_dotenv
-load_dotenv()
-
-import warnings
-warnings.filterwarnings("ignore")
+from utils import get_browser_headers, get_proxy_connector, sanitize_error
 
 import functools
 print = functools.partial(print, flush=True)
 
-# tor proxy config
-TOR_PROXY_HOST = os.getenv("TOR_PROXY_HOST", "127.0.0.1")
-TOR_PROXY_PORT = os.getenv("TOR_PROXY_PORT", "9150")
-
-# browser profiles for fingerprinting
-BROWSER_PROFILES = [
-    {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Accept-Encoding": "gzip, deflate",
-        "Sec-Ch-Ua": '"Chromium";v="135", "Google Chrome";v="135", "Not-A.Brand";v="99"',
-        "Sec-Ch-Ua-Mobile": "?0",
-        "Sec-Ch-Ua-Platform": '"Windows"',
-        "Upgrade-Insecure-Requests": "1",
-    },
-    {
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Accept-Encoding": "gzip, deflate",
-        "Sec-Ch-Ua": '"Chromium";v="135", "Google Chrome";v="135", "Not-A.Brand";v="99"',
-        "Sec-Ch-Ua-Mobile": "?0",
-        "Sec-Ch-Ua-Platform": '"macOS"',
-        "Upgrade-Insecure-Requests": "1",
-    },
-    {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:137.0) Gecko/20100101 Firefox/137.0",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.5",
-        "Accept-Encoding": "gzip, deflate",
-        "Upgrade-Insecure-Requests": "1",
-    },
-    {
-        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:137.0) Gecko/20100101 Firefox/137.0",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.5",
-        "Accept-Encoding": "gzip, deflate",
-        "Upgrade-Insecure-Requests": "1",
-    },
-]
-
-
-def get_browser_headers() -> dict:
-    return random.choice(BROWSER_PROFILES).copy()
-
-
-# sanitized error messages so we dont leak internal info
-ERROR_MESSAGES = {
-    "timeout": "[ERROR: Connection timeout]",
-    "connection": "[ERROR: Connection failed]",
-    "http": "[ERROR: HTTP error]",
-    "parse": "[ERROR: Parse error]",
-    "unknown": "[ERROR: Request failed]",
-}
-
-
-def sanitize_error(exception: Exception) -> str:
-    error_str = str(exception).lower()
-    if "timeout" in error_str:
-        return ERROR_MESSAGES["timeout"]
-    elif "connect" in error_str or "refused" in error_str or "unreachable" in error_str:
-        return ERROR_MESSAGES["connection"]
-    elif "http" in error_str or "status" in error_str:
-        return ERROR_MESSAGES["http"]
-    elif "parse" in error_str or "decode" in error_str:
-        return ERROR_MESSAGES["parse"]
-    else:
-        return ERROR_MESSAGES["unknown"]
 
 
 # dark web search engines
@@ -105,17 +30,7 @@ SEARCH_ENGINES = [
     "http://searchgf7gdtauh7bhnbyed4ivxqmuoat3nm6zfrg3ymkq6mtnpye3ad.onion/search?q={query}",
     "http://torlbmqwtudkorme6prgfpmsnile7ug2zm4u3ejpcncxuhpu4k2j4kyd.onion/index.php?a=search&q={query}",
     "http://toponiibv4eo4pctlszgavni5ajzg7uvkd7e2xslkjmtcfqesjlsqpid.onion/search.php?s={query}",
-    "http://oniwayzz74cv2puhsgx4dpjwieww4wdphsydqvf5q7eyz4myjvyw26ad.onion/search.php?s={query}",
-    "http://torlinksge6enmcyyuxjpjkoouw4oorgdgeo7ftnq3zodj7g2zxi3kyd.onion/",
 ]
-
-
-def get_proxy_connector(stream_id: int) -> ProxyConnector:
-    # each stream_id gets a different tor circuit
-    return ProxyConnector.from_url(
-        f"socks5://stream{stream_id}:x@{TOR_PROXY_HOST}:{TOR_PROXY_PORT}",
-        rdns=True
-    )
 
 
 async def fetch_from_engine(endpoint: str, query: str, stream_id: int) -> list:

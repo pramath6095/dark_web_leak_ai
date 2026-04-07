@@ -4,7 +4,7 @@ import argparse
 import functools
 print = functools.partial(print, flush=True)
 from search import search_dark_web, save_results, get_urls_from_results, SEARCH_ENGINES
-from scrape import load_urls, scrape_all, save_scraped_data
+from scrape import scrape_all, save_scraped_data
 from ioc_extractor import extract_iocs_from_scraped, extract_contacts_from_scraped, format_iocs_summary
 
 

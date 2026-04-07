@@ -5,17 +5,8 @@ import struct
 from urllib.parse import urljoin, urlparse
 from bs4 import BeautifulSoup
 from aiohttp import ClientSession, ClientTimeout
-from aiohttp_socks import ProxyConnector
 
-from dotenv import load_dotenv
-load_dotenv()
-
-import warnings
-warnings.filterwarnings("ignore")
-
-# tor proxy config
-TOR_PROXY_HOST = os.getenv("TOR_PROXY_HOST", "127.0.0.1")
-TOR_PROXY_PORT = os.getenv("TOR_PROXY_PORT", "9150")
+from utils import get_proxy_connector, get_browser_headers
 
 # file extensions we care about
 DOWNLOADABLE_EXTENSIONS = {
@@ -108,20 +99,6 @@ MAX_FILES_PER_PAGE = 5
 MAX_FILES_TOTAL = 20
 
 
-def get_proxy_connector(stream_id: int) -> ProxyConnector:
-    return ProxyConnector.from_url(
-        f"socks5://stream{stream_id}:x@{TOR_PROXY_HOST}:{TOR_PROXY_PORT}",
-        rdns=True
-    )
-
-
-def _get_browser_headers() -> dict:
-    return {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36",
-        "Accept": "*/*",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Accept-Encoding": "identity",
-    }
 
 
 def detect_file_type(header_bytes: bytes) -> str:
@@ -376,7 +353,7 @@ async def download_file_header(url: str, stream_id: int) -> dict:
     """
     connector = get_proxy_connector(stream_id)
     timeout = ClientTimeout(total=15)
-    headers = _get_browser_headers()
+    headers = get_browser_headers()
     headers['Range'] = f'bytes=0-{HEADER_SIZE - 1}'
     
     result = {
@@ -451,7 +428,7 @@ async def download_torrent_metadata(url: str, stream_id: int) -> dict:
     """download a .torrent file and parse its metadata (file listing)"""
     connector = get_proxy_connector(stream_id)
     timeout = ClientTimeout(total=15)
-    headers = _get_browser_headers()
+    headers = get_browser_headers()
     
     try:
         async with ClientSession(connector=connector, timeout=timeout) as session:

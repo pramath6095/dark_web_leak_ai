@@ -100,19 +100,16 @@ def _generate_alerts_from_classifications(query, classifications, company_catego
         if cat and ev:
             existing_fingerprints.add((cat, ev))
 
-    # filter for company-specific pages
+    # filter for company-specific pages only
     cs_findings = []
-    general_findings = []
     for url, cls in classifications.items():
         relevance = "general"
         if company_categories:
             relevance = cls.get("company_relevance", company_categories.get(url, "general"))
         if relevance == "company_specific":
             cs_findings.append(cls)
-        else:
-            general_findings.append(cls)
 
-    # only use company-specific findings for alerts — do not fall back to general findings
+    # only use company-specific findings for alerts
     findings_to_alert = cs_findings
 
     if not findings_to_alert:

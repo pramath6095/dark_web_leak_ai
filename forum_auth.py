@@ -17,8 +17,7 @@ from bs4 import BeautifulSoup
 from aiohttp import ClientSession, ClientTimeout, CookieJar
 from aiohttp_socks import ProxyConnector
 
-from dotenv import load_dotenv
-load_dotenv()
+from utils import TOR_PROXY_HOST, TOR_PROXY_PORT, get_browser_headers
 
 import functools
 import sys
@@ -32,13 +31,6 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
 
 print = functools.partial(print, flush=True)
 
-import warnings
-warnings.filterwarnings("ignore")
-
-# tor proxy config
-TOR_PROXY_HOST = os.getenv("TOR_PROXY_HOST", "127.0.0.1")
-TOR_PROXY_PORT = os.getenv("TOR_PROXY_PORT", "9150")
-
 # forum auth config
 FORUM_ACCOUNTS_FILE = os.getenv("FORUM_ACCOUNTS_FILE", os.path.join("output", "forum_accounts.json"))
 FORUM_AUTO_REGISTER = os.getenv("FORUM_AUTO_REGISTER", "true").lower() == "true"
@@ -47,14 +39,8 @@ FORUM_AUTO_REGISTER = os.getenv("FORUM_AUTO_REGISTER", "true").lower() == "true"
 CAPTCHA_API_KEY = os.getenv("CAPTCHA_API_KEY", "").strip()
 CAPTCHA_SERVICE = os.getenv("CAPTCHA_SERVICE", "2captcha").strip().lower()
 
-# browser headers (reuse from scrape.py pattern)
-BROWSER_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:137.0) Gecko/20100101 Firefox/137.0",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.5",
-    "Accept-Encoding": "gzip, deflate",
-    "Upgrade-Insecure-Requests": "1",
-}
+# browser headers for forum requests
+BROWSER_HEADERS = get_browser_headers()
 
 # common login-wall indicators
 LOGIN_WALL_PATTERNS = [

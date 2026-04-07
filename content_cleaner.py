@@ -97,14 +97,3 @@ def extract_meaningful_section(text: str, max_chars: int = 1500) -> str:
         meaningful_text = meaningful_text[:max_chars]
 
     return meaningful_text.strip()
-
-
-def clean_scraped_data(scraped_data: dict) -> dict:
-    """
-    clean all scraped page content.
-    returns new dict with same keys but cleaned values.
-    """
-    cleaned = {}
-    for url, content in scraped_data.items():
-        cleaned[url] = clean_content(content)
-    return cleaned

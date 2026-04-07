@@ -3,6 +3,7 @@ import json
 import time
 import threading
 import requests
+
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -61,14 +62,8 @@ for _prov, _prefix in _PROVIDER_PREFIX.items():
         if _val:
             _PROVIDER_KEYS[_prov][_stage] = _val
 
-# legacy fallback: GEMINI_API_KEY -> gemini refine key
-_gemini_legacy = os.getenv("GEMINI_API_KEY", "").strip()
-if _gemini_legacy and "refine" not in _PROVIDER_KEYS.get("gemini", {}):
-    _PROVIDER_KEYS.setdefault("gemini", {})["refine"] = _gemini_legacy
-
-
-GEMINI_MAX_RETRIES = 3
-GEMINI_RETRY_DELAYS = [2, 5, 10]
+MAX_RETRIES = 3
+RETRY_DELAYS = [2, 5, 10]
 
 # per-stage output token caps
 STAGE_MAX_TOKENS = {
@@ -217,14 +212,14 @@ def _call_gemini(prompt: str, api_key: str, stage: str = "summary", temperature:
         "generationConfig": gen_config
     }
 
-    for attempt in range(GEMINI_MAX_RETRIES):
+    for attempt in range(MAX_RETRIES):
         try:
             response = requests.post(url, json=payload, timeout=60)
 
             if response.status_code == 429:
                 _record_rate_limit(api_key)
-                delay = GEMINI_RETRY_DELAYS[attempt] if attempt < len(GEMINI_RETRY_DELAYS) else 10
-                print(f"  [!] Rate limited (429). Retrying in {delay}s... (attempt {attempt + 1}/{GEMINI_MAX_RETRIES})")
+                delay = RETRY_DELAYS[attempt] if attempt < len(RETRY_DELAYS) else 10
+                print(f"  [!] Rate limited (429). Retrying in {delay}s... (attempt {attempt + 1}/{MAX_RETRIES})")
                 time.sleep(delay)
                 continue
 
@@ -268,14 +263,14 @@ def _call_anthropic(prompt: str, api_key: str, stage: str = "summary", temperatu
         "messages": [{"role": "user", "content": prompt}],
     }
 
-    for attempt in range(GEMINI_MAX_RETRIES):
+    for attempt in range(MAX_RETRIES):
         try:
             response = requests.post(url, json=payload, headers=headers, timeout=90)
 
             if response.status_code == 429:
                 _record_rate_limit(api_key)
-                delay = GEMINI_RETRY_DELAYS[attempt] if attempt < len(GEMINI_RETRY_DELAYS) else 10
-                print(f"  [!] Anthropic rate limited. Retrying in {delay}s... (attempt {attempt + 1}/{GEMINI_MAX_RETRIES})")
+                delay = RETRY_DELAYS[attempt] if attempt < len(RETRY_DELAYS) else 10
+                print(f"  [!] Anthropic rate limited. Retrying in {delay}s... (attempt {attempt + 1}/{MAX_RETRIES})")
                 time.sleep(delay)
                 continue
 
@@ -322,14 +317,14 @@ def _call_openai_compatible(prompt: str, api_key: str, provider: str, stage: str
     if stage in STAGE_JSON_MODE:
         payload["response_format"] = {"type": "json_object"}
 
-    for attempt in range(GEMINI_MAX_RETRIES):
+    for attempt in range(MAX_RETRIES):
         try:
             response = requests.post(url, json=payload, headers=headers, timeout=90)
 
             if response.status_code == 429:
                 _record_rate_limit(api_key)
-                delay = GEMINI_RETRY_DELAYS[attempt] if attempt < len(GEMINI_RETRY_DELAYS) else 10
-                print(f"  [!] {provider.title()} rate limited. Retrying in {delay}s... (attempt {attempt + 1}/{GEMINI_MAX_RETRIES})")
+                delay = RETRY_DELAYS[attempt] if attempt < len(RETRY_DELAYS) else 10
+                print(f"  [!] {provider.title()} rate limited. Retrying in {delay}s... (attempt {attempt + 1}/{MAX_RETRIES})")
                 time.sleep(delay)
                 continue
 
@@ -1209,11 +1204,8 @@ Output ONLY valid JSON array, no markdown, no explanation:
 
 JSON:"""
 
-    # build reverse lookup: truncated url -> full url (AI may return truncated)
-    url_map = {}
-    for url_full in file_analysis:
-        url_map[url_full] = url_full
-        url_map[url_full[:80]] = url_full
+    # build reverse lookup for AI URL matching
+    url_map = {url_full: url_full for url_full in file_analysis}
 
     parsed = _call_llm_json_retry(prompt, "file_analysis")
     if parsed:
