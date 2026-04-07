@@ -1118,7 +1118,8 @@ Same rules as above. Max 10 rows.
 
 CRITICAL RULES:
 - NO raw HTML/boilerplate in any output (no "JavaScript is Disabled", no "Menu Log in Register")
-- Every table cell MUST be under 60 characters
+- URLs MUST be included in FULL — never shorten, truncate, or abbreviate any URL
+- Non-URL table cells should be concise (under 60 characters) but URLs are exempt from length limits
 - Be analytical — identify PATTERNS across sources, don't just list what each page says
 - You MUST complete ALL sections above — do not stop early or skip sections
 - Aim for 4000-5000 characters total — be thorough but avoid padding or repetition
@@ -1152,7 +1153,7 @@ def verify_threat_files(query: str, file_analysis: dict) -> dict:
         if not isinstance(analysis, dict):
             continue
 
-        entry_lines = [f"[{i}] URL: {url[:80]}"]
+        entry_lines = [f"[{i}] URL: {url}"]
 
         ftype = analysis.get('file_type', analysis.get('type', 'unknown'))
         entry_lines.append(f"  File Type: {ftype}")

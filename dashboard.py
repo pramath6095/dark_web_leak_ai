@@ -112,12 +112,8 @@ def _generate_alerts_from_classifications(query, classifications, company_catego
         else:
             general_findings.append(cls)
 
-    # use company-specific if available, otherwise fall back to all high/critical findings
-    if cs_findings:
-        findings_to_alert = cs_findings
-    else:
-        # no company-specific: show high/critical general findings
-        findings_to_alert = [f for f in general_findings if f.get("severity") in ("critical", "high")]
+    # only use company-specific findings for alerts — do not fall back to general findings
+    findings_to_alert = cs_findings
 
     if not findings_to_alert:
         _add_alert("clear", f"Scan complete for \"{query}\"",
@@ -748,7 +744,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .markdown-body code { background: rgba(0,0,0,0.3); padding: 2px 6px; border-radius: 4px; font-family: var(--mono); font-size: 12.5px; }
   .markdown-body pre { background: rgba(0,0,0,0.5); padding: 16px; border-radius: 8px; overflow-x: auto; margin-bottom: 16px; border: 1px solid var(--border); }
   .markdown-body pre code { background: none; padding: 0; border: none; }
-  .markdown-body table { width: 100%; border-collapse: collapse; margin-bottom: 16px; overflow-x: auto; table-layout: fixed; }
+  .markdown-body table { width: 100%; border-collapse: collapse; margin-bottom: 16px; overflow-x: auto; table-layout: auto; }
   .markdown-body th, .markdown-body td { border: 1px solid var(--border); padding: 10px 14px; text-align: left; white-space: normal; word-break: break-word; }
   .markdown-body th { background: rgba(255,255,255,0.05); color: white; font-weight: 600; position: sticky; top: 0; z-index: 1; }
   .markdown-body tr:nth-child(even) { background: rgba(255,255,255,0.02); }
@@ -764,10 +760,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     border: 1px solid var(--border); border-radius: 10px;
     margin-bottom: 4px; background: rgba(0,0,0,0.15);
   }
-  .ioc-scroll table { margin-bottom: 0; width: 100%; table-layout: fixed; }
+  .ioc-scroll table { margin-bottom: 0; width: 100%; table-layout: auto; }
   .ioc-scroll thead th:not(:empty) ~ * { } /* keep non-empty headers */
   .ioc-scroll thead { visibility: collapse; }
-  .ioc-scroll td { overflow: hidden; text-overflow: ellipsis; }
+  .ioc-scroll td { overflow: visible; word-break: break-all; }
   .ioc-scroll::-webkit-scrollbar { width: 5px; }
   .ioc-scroll::-webkit-scrollbar-track { background: transparent; }
   .ioc-scroll::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 5px; }
