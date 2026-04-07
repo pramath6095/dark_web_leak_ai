@@ -255,15 +255,10 @@ If `--check-engines` shows some engines as alive, Tor is working. If the AI engi
 #### Step 8 — Run Your First Scan
 
 ```bash
-# CLI mode (interactive)
-python main.py
-
-# CLI mode (direct query)
-python main.py "company name data breach"
-
-# Web dashboard
-python main.py --dashboard
+python dashboard.py
 ```
+
+Then open **http://localhost:5000** in your browser to use the dashboard.
 
 ---
 
@@ -283,15 +278,11 @@ cp .env.example .env
 #### Step 2 — Build and Run
 
 ```bash
-# Run with a direct query
-docker compose run --rm aidarkleak "company name data breach"
-
-# Run in interactive mode
-docker compose run --rm aidarkleak
-
 # Run the web dashboard
-docker compose run --rm -p 5000:5000 aidarkleak python main.py --dashboard
+docker compose run --rm -p 5000:5000 aidarkleak python dashboard.py
 ```
+
+Then open **http://localhost:5000** in your browser to use the dashboard.
 
 Output files are automatically saved to `./output/` on your host via Docker volume mount.
 
@@ -301,47 +292,9 @@ Output files are automatically saved to `./output/` on your host via Docker volu
 
 ## Running the Tool
 
-### CLI Mode
+The easiest and recommended way to run AI Dark Leak is through the web dashboard.
 
 ```bash
-# Interactive mode — prompts for query and parameters
-python main.py
-
-# Direct query with defaults
-python main.py "leaked credentials"
-
-# Full control over parameters
-python main.py -t 5 -e 10 -l 20 -d 2 -p 3 "company name"
-
-# Search + scrape only (no AI analysis)
-python main.py --no-ai "credentials dump"
-
-# Skip file header analysis
-python main.py --no-download "data breach"
-
-# Check which search engines are alive
-python main.py --check-engines
-```
-
-**What happens during a CLI run:**
-1. AI refines your query into OSINT-optimized search terms
-2. Searches up to 19 dark web engines simultaneously through Tor
-3. AI filters and ranks results by relevance to your query
-4. Scrapes selected pages through Tor with circuit isolation
-5. Extracts IOCs (emails, IPs, hashes, wallets) via regex
-6. Extracts threat actor contacts (Telegram, ICQ, etc.)
-7. Categorizes pages as company-specific vs general threats
-8. Classifies threats by category and severity
-9. Analyzes downloadable file headers (4KB only — no full downloads)
-10. Generates an intelligence summary report
-
-All outputs are saved to the `output/` directory.
-
-### Web Dashboard
-
-```bash
-python main.py --dashboard
-# or
 python dashboard.py
 ```
 
