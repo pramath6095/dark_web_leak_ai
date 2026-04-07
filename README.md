@@ -220,14 +220,15 @@ See [AI Provider Setup](#ai-provider-setup) for detailed provider configuration.
 
 **Option A: Ollama (Free, Local — Recommended for Getting Started)**
 1. Install Ollama from https://ollama.ai
-2. Pull a model:
+2. Pull a model (we recommend `deepseek-v3.1:671b-cloud` as it works best):
    ```bash
-   ollama pull llama3.2
+   ollama pull deepseek-v3.1:671b-cloud
    ```
 3. Ollama runs automatically on `http://localhost:11434`
 4. Set in `.env`:
    ```ini
    AI_PROVIDER=ollama
+   OLLAMA_MODEL=deepseek-v3.1:671b-cloud
    ```
 
 **Option B: Cloud Provider (Gemini, Anthropic, etc.)**
