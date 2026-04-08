@@ -34,7 +34,7 @@ AI-powered dark web leak monitoring tool. Searches `.onion` search engines, scra
 ## Features
 
 ### Search & Discovery
-- **Multi-engine search** — queries 19 dark web search engines simultaneously
+- **Multi-engine search** — queries 18 dark web search engines simultaneously
 - **AI query refinement** — generates optimized OSINT keywords from your search term
 - **Smart filtering** — AI ranks and filters results by relevance
 - **Browser fingerprinting** — rotates user agents to avoid detection
@@ -92,7 +92,7 @@ AI-powered dark web leak monitoring tool. Searches `.onion` search engines, scra
        │   Pipeline Engine   │
        ├─────────────────────┤
        │ 1. Query Refinement │◄── ai_engine.py
-       │ 2. Dark Web Search  │◄── search.py (19 engines)
+       │ 2. Dark Web Search  │◄── search.py (18 engines)
        │ 3. Result Filtering │◄── ai_engine.py
        │ 4. Content Scraping │◄── scrape.py + forum_auth.py
        │ 5. IOC Extraction   │◄── ioc_extractor.py
@@ -398,7 +398,7 @@ CAPTCHA_SERVICE=2captcha    # or anticaptcha
 
 ```
 Step 1: AI Query Refinement      → Generates 5 OSINT-optimized search keywords
-Step 2: Dark Web Search          → Searches up to 19 .onion engines simultaneously
+Step 2: Dark Web Search          → Searches up to 18 .onion engines simultaneously
 Step 3: AI Result Filtering      → Ranks and selects the most relevant results
 Step 4: Content Scraping         → Scrapes pages through Tor with circuit isolation
   4.5:  IOC Auto-Extraction      → Regex-based IOC extraction (emails, IPs, hashes, wallets)
@@ -475,7 +475,7 @@ Browse, view, and download all generated report files. Summary and file analysis
 
 ```
 main.py              — Entry point, CLI argument parsing, pipeline orchestration
-search.py            — Async multi-engine dark web search (19 engines)
+search.py            — Async multi-engine dark web search (18 engines)
 scrape.py            — Content scraping with Tor circuit isolation + login wall detection
 ai_engine.py         — All AI stages: refine, filter, classify, verify, summarize
 ioc_extractor.py     — Regex IOC extraction (emails, IPs, hashes, wallets, contacts)
