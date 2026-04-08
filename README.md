@@ -128,7 +128,7 @@ AI-powered dark web leak monitoring tool. Searches `.onion` search engines, scra
 #### Step 1 — Clone the Repository
 
 ```bash
-git clone https://github.com/pramath6095/dark_web_leak_ai
+git clone https://github.com/pramath6095/dark_web_leak_ai.git
 cd dark_web_leak_ai
 ```
 
@@ -269,7 +269,7 @@ Docker includes Tor pre-configured (no separate Tor installation needed).
 #### Step 1 — Clone and Configure
 
 ```bash
-git clone https://github.com/pramath6095/dark_web_leak_ai
+git clone https://github.com/pramath6095/dark_web_leak_ai.git
 cd dark_web_leak_ai
 cp .env.example .env
 # Edit .env and add your AI provider API keys
