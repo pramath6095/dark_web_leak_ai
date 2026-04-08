@@ -151,77 +151,68 @@ def _generate_alerts_from_classifications(query, classifications, company_catego
                    f"No new findings. {len(findings_to_alert)} findings already tracked.")
 
 
-def _schedule_next_run():
-    """schedule the next automated pipeline run based on saved settings"""
+def _cancel_auto_timer():
+    """cancel any pending automated timer"""
     global _auto_timer
     with _auto_lock:
-        # cancel any existing timer
         if _auto_timer is not None:
             _auto_timer.cancel()
             _auto_timer = None
 
-        settings = _load_auto_settings()
-        if not settings.get("enabled"):
-            return
 
-        interval_secs = settings.get("interval_hours", 6) * 3600
-        _auto_timer = threading.Timer(interval_secs, _auto_run)
-        _auto_timer.daemon = True
-        _auto_timer.start()
-        print(f"[AUTOMATION] Next run scheduled in {settings.get('interval_hours', 6)}h")
+def _schedule_next_run_after_complete(query, config):
+    """schedule the next automated run AFTER the current one finishes.
+    The timer only starts counting down once this function is called."""
+    global _auto_timer
+    _cancel_auto_timer()
 
-
-def _auto_run():
-    """execute one automated pipeline run and generate alerts"""
     settings = _load_auto_settings()
     if not settings.get("enabled"):
         return
 
-    # use the last query from the most recent job, or a default
-    last_query = ""
-    with _job_lock:
-        for jid in sorted(_jobs.keys(), reverse=True):
-            last_query = _jobs[jid].get("query", "")
-            if last_query:
-                break
+    interval_secs = settings.get("interval_hours", 6) * 3600
+    # record when the next run will fire so the UI countdown is accurate
+    settings["next_run_ts"] = time.time() + interval_secs
+    _save_auto_settings(settings)
 
-    if not last_query:
-        _add_alert("info", "Automation skipped", "No query configured. Run a manual pipeline first.")
-        _schedule_next_run()
+    with _auto_lock:
+        _auto_timer = threading.Timer(interval_secs, _auto_run, args=(query, config))
+        _auto_timer.daemon = True
+        _auto_timer.start()
+    print(f"[AUTOMATION] Next run scheduled in {settings.get('interval_hours', 6)}h (starts after completion)")
+
+
+def _auto_run(query, config):
+    """execute one automated pipeline run, then schedule the next one
+    only after this run is fully complete."""
+    global _auto_timer
+    with _auto_lock:
+        _auto_timer = None  # timer has fired
+
+    settings = _load_auto_settings()
+    if not settings.get("enabled"):
         return
 
-    print(f"[AUTOMATION] Starting automated run for: {last_query}")
+    print(f"[AUTOMATION] Starting automated run for: {query}")
 
     job_id = f"auto_{int(time.time())}_{os.getpid()}"
-    config = {
-        "use_ai": True,
-        "ai_provider": "ollama",
-        "ollama_model": "",
-        "num_engines": MAX_ENGINES,
-        "scrape_limit": 10,
-        "threads": 3,
-        "depth": 1,
-        "max_pages": 1,
-    }
 
     with _job_lock:
         _jobs[job_id] = {
             "status": "queued",
-            "query": last_query,
+            "query": query,
             "config": config,
             "created": time.time(),
             "automated": True,
         }
 
     try:
-        _run_pipeline(job_id, last_query, config)
-        # alerts are now generated inside _run_pipeline via _generate_alerts_from_classifications
-
+        _run_pipeline(job_id, query, config)
     except Exception as e:
         _add_alert("medium", "Automated run failed", str(e)[:300])
 
-    # schedule the next run
-    _schedule_next_run()
+    # schedule the NEXT run only now that this one is done
+    _schedule_next_run_after_complete(query, config)
 
 
 def _check_abort(job_id: str) -> bool:
@@ -797,7 +788,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   /* ── 3-COLUMN DASHBOARD GRID ── */
   .dashboard-grid {
     display: grid;
-    grid-template-columns: 1fr 1fr 1fr;
+    grid-template-columns: 1fr 1fr;
     gap: 24px;
     margin-bottom: 24px;
   }
@@ -969,41 +960,25 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             <option value="">Loading models…</option>
           </select>
         </div>
-        <div></div>
       </div>
-      <div style="flex:1"></div>
+      <!-- AUTOMATION: inline repeat controls -->
+      <div class="row" style="margin-top:8px;align-items:center">
+        <div style="flex:0 0 auto;display:flex;align-items:center;gap:10px;padding-top:16px">
+          <label class="toggle-switch" style="margin:0">
+            <input type="checkbox" id="auto-enabled">
+            <span class="slider-toggle"></span>
+          </label>
+          <span style="color:var(--accent);font-size:13px;font-weight:600;white-space:nowrap">Repeat</span>
+        </div>
+        <div><label>Interval (Hours)</label><input type="number" id="auto-interval" value="6" min="0.001" max="168" step="any" placeholder="e.g. 0.5, 1, 6, 24"></div>
+        <div><label>Webhook URL</label><input type="text" id="auto-webhook" placeholder="https://discord/slack…"></div>
+      </div>
+      <div style="padding:8px 0;text-align:center;margin-top:6px">
+        <span style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em">Next Automated Run: </span>
+        <span style="font-weight:600;color:var(--accent);font-size:13px" id="auto-countdown">—</span>
+      </div>
       <button type="submit" id="run-btn" class="btn btn-primary">Run Pipeline</button>
     </form>
-  </div>
-
-  <!-- COLUMN 2: AUTOMATION SETTINGS -->
-  <div class="card">
-    <div class="card-header">
-      <div class="h-bar" style="background:var(--accent2)"></div>
-      <h2>Automation Settings</h2>
-    </div>
-    <div style="flex:1;display:flex;flex-direction:column">
-      <div style="display:flex;align-items:center;justify-content:space-between;padding:16px;background:rgba(255,255,255,0.03);border:1px solid var(--border);border-radius:10px;margin-bottom:20px">
-        <div>
-          <div style="color:var(--text);font-weight:600;font-size:14px">Enable Automation</div>
-          <div style="font-size:12px;color:var(--muted);margin-top:4px">Run current query on schedule</div>
-        </div>
-        <label class="toggle-switch">
-          <input type="checkbox" id="auto-enabled">
-          <span class="slider-toggle"></span>
-        </label>
-      </div>
-      <label>Monitor Interval (Hours)</label>
-      <input type="number" id="auto-interval" value="6" min="0.1" max="168" step="0.5" style="margin-bottom:16px" placeholder="e.g. 0.5, 1, 6, 24">
-      <label>Webhook URL (Discord/Slack)</label>
-      <input type="text" id="auto-webhook" placeholder="https://..." style="margin-bottom:16px">
-      <div style="flex:1"></div>
-      <div style="padding:12px;border-radius:8px;border:1px dashed var(--border);text-align:center;margin-bottom:20px">
-        <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:4px">Next Automated Run</div>
-        <div style="font-weight:600;color:var(--accent);font-size:14px" id="auto-countdown">—</div>
-      </div>
-      <button type="button" class="btn btn-secondary" onclick="saveAutoSettings()">Save Settings</button>
-    </div>
   </div>
 
   <!-- COLUMN 3: RECENT ALERTS -->
@@ -1237,6 +1212,9 @@ form.addEventListener('submit', async (e) => {
     use_ai:       document.getElementById('ai').value === '1',
     ai_provider:  document.getElementById('provider').value,
     ollama_model: document.getElementById('ollama-model').value,
+    repeat:       document.getElementById('auto-enabled').checked,
+    interval_hours: parseFloat(document.getElementById('auto-interval').value) || 6,
+    webhook_url:  document.getElementById('auto-webhook').value,
   };
   const res  = await fetch('/run', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) });
   const data = await res.json();
@@ -1251,6 +1229,8 @@ form.addEventListener('submit', async (e) => {
   lastStageTimes = {};
   renderJobRunning('queued', null, {});
   setButtonAbort();
+  // update header automation pill
+  updateAutoPill(body.repeat);
   pollInterval = setInterval(() => pollJob(data.job_id), 2000);
   logPollInterval = setInterval(() => pollLogs(data.job_id), 1500);
 });
@@ -1271,6 +1251,8 @@ async function pollJob(jobId) {
     loadFiles();
     loadAlerts();
     loadLoginWalls();
+    // start automation countdown if repeat was enabled (timer started server-side after completion)
+    refreshAutoCountdown();
   } else if (s.status === 'aborted') {
     stopTimer();
     renderJobAborted();
@@ -1648,22 +1630,20 @@ async function loadAutoSettings() {
   } catch(e) {}
 }
 
-async function saveAutoSettings() {
-  const body = {
-    enabled: document.getElementById('auto-enabled').checked,
-    interval_hours: parseFloat(document.getElementById('auto-interval').value) || 6,
-    webhook_url: document.getElementById('auto-webhook').value,
-  };
-  const res = await fetch('/automation/settings', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
-  const data = await res.json();
-  updateAutoPill(body.enabled);
-  if (body.enabled && data.next_run_ts) {
-    autoNextRunTime = data.next_run_ts * 1000;
-    startCountdown();
-  } else {
-    document.getElementById('auto-countdown').textContent = '—';
-    if (autoCountdownInterval) clearInterval(autoCountdownInterval);
-  }
+// refresh the countdown from server (called after a run completes)
+async function refreshAutoCountdown() {
+  try {
+    const res = await fetch('/automation/settings');
+    const data = await res.json();
+    updateAutoPill(data.enabled);
+    if (data.enabled && data.next_run_ts) {
+      autoNextRunTime = data.next_run_ts * 1000;
+      startCountdown();
+    } else {
+      document.getElementById('auto-countdown').textContent = '—';
+      if (autoCountdownInterval) clearInterval(autoCountdownInterval);
+    }
+  } catch(e) {}
 }
 
 function updateAutoPill(enabled) {
@@ -1862,6 +1842,22 @@ def run_pipeline():
         "max_pages":     data.get("max_pages", 1),
     }
 
+    # handle repeat / automation params passed from the form
+    repeat = data.get("repeat", False)
+    interval_hours = float(data.get("interval_hours", 6))
+    webhook_url = data.get("webhook_url", "")
+
+    # persist automation settings so they survive refreshes
+    auto_settings = {
+        "enabled": repeat,
+        "interval_hours": interval_hours,
+        "webhook_url": webhook_url,
+    }
+    _save_auto_settings(auto_settings)
+
+    # cancel any previously pending timer (new manual run overrides)
+    _cancel_auto_timer()
+
     with _job_lock:
         _jobs[job_id] = {
             "status":  "queued",
@@ -1870,7 +1866,13 @@ def run_pipeline():
             "created": time.time(),
         }
 
-    thread = threading.Thread(target=_run_pipeline, args=(job_id, query, config), daemon=True)
+    def _run_and_maybe_repeat():
+        _run_pipeline(job_id, query, config)
+        # after completion, schedule next run if repeat is enabled
+        if repeat:
+            _schedule_next_run_after_complete(query, config)
+
+    thread = threading.Thread(target=_run_and_maybe_repeat, daemon=True)
     thread.start()
 
     return jsonify({"job_id": job_id})
@@ -1987,34 +1989,10 @@ def ollama_models():
 
 @app.route("/automation/settings", methods=["GET"])
 def get_auto_settings():
-    """return current automation settings"""
+    """return current automation settings + next_run_ts if stored"""
     settings = _load_auto_settings()
-    # compute next run timestamp if automation is active
-    if settings.get("enabled") and _auto_timer is not None:
-        # approximate: current time + remaining interval
-        interval_secs = settings.get("interval_hours", 6) * 3600
-        settings["next_run_ts"] = time.time() + interval_secs
+    # next_run_ts is persisted when the timer is scheduled
     return jsonify(settings)
-
-
-@app.route("/automation/settings", methods=["POST"])
-def set_auto_settings():
-    """save automation settings and reschedule"""
-    data = request.get_json()
-    settings = {
-        "enabled": data.get("enabled", False),
-        "interval_hours": float(data.get("interval_hours", 6)),
-        "webhook_url": data.get("webhook_url", ""),
-    }
-    _save_auto_settings(settings)
-
-    # reschedule
-    _schedule_next_run()
-
-    resp = {"status": "saved"}
-    if settings["enabled"]:
-        resp["next_run_ts"] = time.time() + settings["interval_hours"] * 3600
-    return jsonify(resp)
 
 
 @app.route("/automation/alerts")
@@ -2068,6 +2046,6 @@ def list_login_walls():
 
 
 if __name__ == "__main__":
-    # start automation scheduler if previously enabled
-    _schedule_next_run()
+    # automation timer is started only when a pipeline run completes with repeat=on
+    # (no automatic scheduling on startup — user must click Run Pipeline)
     app.run(host="0.0.0.0", port=5000, debug=True)
